@@ -53,7 +53,7 @@ LLM Provider: Local Ollama server (default: http://localhost:11434)
 
 ### AI Features
 - **AI Chat (RAG)**: Chat with local Llama model via Ollama, uses uploaded emails as context for better responses
-- **Email Classification**: Automatic categorization into work, personal, meeting, finance, marketing, support, other
+- **Email Classification**: Automatic categorization into reference (단순 참조), reply_needed (회신 필요), urgent_reply (긴급 회신), meeting (회의)
 - **Calendar Event Extraction**: AI-powered extraction of dates, times, and event details from emails (auto-triggered on import)
 - **Environment**: OLLAMA_BASE_URL (default: http://localhost:11434)
 
