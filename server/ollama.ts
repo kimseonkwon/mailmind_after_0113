@@ -205,7 +205,14 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     }
 
     const data = await response.json();
-    return data.embeddings?.[0] || null;
+    const embedding = data.embedding || data.embeddings?.[0] || null;
+    
+    if (!embedding || !Array.isArray(embedding)) {
+      console.error("Invalid embedding response:", JSON.stringify(data).substring(0, 200));
+      return null;
+    }
+    
+    return embedding;
   } catch (error) {
     console.error("Embedding generation error:", error);
     return null;
