@@ -502,7 +502,7 @@ ${email.body}
 
   app.get("/api/emails/classification-stats", async (_req: Request, res: Response) => {
     try {
-      const emails = await storage.getAllEmails();
+      const emails = await storage.getAllEmails(100000);
       const stats = {
         total: emails.length,
         task: 0,
@@ -538,7 +538,7 @@ ${email.body}
         return;
       }
 
-      const emails = await storage.getAllEmails();
+      const emails = await storage.getAllEmails(100000);
       const unprocessedEmails = emails.filter(e => !e.classification || !e.isProcessed);
       
       if (unprocessedEmails.length === 0) {
