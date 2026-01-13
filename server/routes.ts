@@ -13,7 +13,7 @@ import {
   type EventExtractionResponse
 } from "@shared/schema";
 import { ZodError } from "zod";
-import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmbedding, generateEmailChunks } from "./ollama";
+import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmbedding, generateEmailChunks, getShipbuildingSystemPrompt } from "./ollama";
 import { parsePSTFromBuffer } from "./pst-parser";
 
 const upload = multer({ 
@@ -367,29 +367,58 @@ export async function registerRoutes(
       });
 
       let emailContext = "";
+      const vectorResults: Array<{ content: string; similarity: number }> = [];
+      const keywordResults: Array<{ subject: string; sender: string; date: string; body: string; score: number }> = [];
       
       const ragChunkCount = await storage.getRagChunkCount();
       if (ragChunkCount > 0) {
         const queryEmbedding = await generateEmbedding(message);
         if (queryEmbedding) {
           const relevantChunks = await storage.searchRagChunks(queryEmbedding, 5);
-          if (relevantChunks.length > 0) {
-            const contextItems = relevantChunks.map((r, i) => 
-              `[관련 정보 ${i + 1}] (유사도: ${(r.similarity * 100).toFixed(1)}%)\n${r.chunk.content}`
-            );
-            emailContext = `\n\n참고할 관련 이메일 정보:\n${contextItems.join("\n\n")}`;
+          for (const r of relevantChunks) {
+            if (r.similarity > 0.3) {
+              vectorResults.push({ content: r.chunk.content, similarity: r.similarity });
+            }
           }
         }
       }
       
-      if (!emailContext) {
-        const relevantEmails = await storage.searchEmails(message, 5);
-        if (relevantEmails.length > 0) {
-          const emailContextItems = relevantEmails.map((e, i) => 
-            `[이메일 ${i + 1}]\n제목: ${e.subject}\n발신자: ${e.sender}\n날짜: ${e.date}\n내용: ${e.body.substring(0, 300)}...`
-          );
-          emailContext = `\n\n참고할 관련 이메일들:\n${emailContextItems.join("\n\n")}`;
+      const relevantEmails = await storage.searchEmails(message, 10);
+      for (const e of relevantEmails) {
+        if (e.score >= 1.0) {
+          keywordResults.push({
+            subject: e.subject,
+            sender: e.sender,
+            date: e.date,
+            body: e.body,
+            score: e.score
+          });
         }
+      }
+      keywordResults.sort((a, b) => b.score - a.score);
+      keywordResults.splice(5);
+      
+      const seenContent = new Set<string>();
+      const contextItems: string[] = [];
+      
+      for (const v of vectorResults) {
+        const key = v.content.substring(0, 100);
+        if (!seenContent.has(key)) {
+          seenContent.add(key);
+          contextItems.push(`[벡터 검색 - 유사도 ${(v.similarity * 100).toFixed(0)}%]\n${v.content}`);
+        }
+      }
+      
+      for (const k of keywordResults) {
+        const key = k.subject + k.sender;
+        if (!seenContent.has(key) && contextItems.length < 8) {
+          seenContent.add(key);
+          contextItems.push(`[키워드 검색 - 점수 ${k.score.toFixed(1)}]\n제목: ${k.subject}\n발신자: ${k.sender}\n날짜: ${k.date}\n내용: ${k.body.substring(0, 400)}...`);
+        }
+      }
+      
+      if (contextItems.length > 0) {
+        emailContext = contextItems.join("\n\n---\n\n");
       }
 
       const previousMessages = await storage.getMessages(convId);
@@ -398,9 +427,7 @@ export async function registerRoutes(
         content: m.content,
       }));
 
-      const systemPrompt = `당신은 이메일 관리와 일정 정리를 도와주는 AI 비서입니다. 
-사용자가 업로드한 이메일 데이터를 기반으로 질문에 답변해주세요.
-한국어로 친절하게 응답해주세요.${emailContext}`;
+      const systemPrompt = getShipbuildingSystemPrompt(emailContext);
 
       const aiResponse = await chatWithOllama([
         { role: "system", content: systemPrompt },

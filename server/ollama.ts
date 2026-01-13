@@ -241,40 +241,74 @@ export interface RagChunk {
   embedding: number[];
 }
 
+function splitKoreanSentences(text: string): string[] {
+  const sentences: string[] = [];
+  const delimiterPattern = /[.?!。！？\n]+/;
+  const parts = text.split(delimiterPattern);
+  
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (trimmed.length > 0) {
+      sentences.push(trimmed);
+    }
+  }
+  
+  return sentences.length > 0 ? sentences : [text.trim()];
+}
+
 export async function generateEmailChunks(
   emailId: number,
   subject: string,
   sender: string,
   date: string,
   body: string,
-  chunkSize: number = 500
+  chunkSize: number = 300,
+  overlapSentences: number = 2
 ): Promise<Array<{ content: string; embedding: number[] }>> {
   const chunks: Array<{ content: string; embedding: number[] }> = [];
   
   const headerText = `제목: ${subject}\n발신자: ${sender}\n날짜: ${date}`;
   
   const cleanBody = body.replace(/\s+/g, " ").trim();
-  const words = cleanBody.split(" ");
+  const sentences = splitKoreanSentences(cleanBody);
   
-  let currentChunk = headerText + "\n\n";
-  
-  for (const word of words) {
-    if ((currentChunk + " " + word).length > chunkSize && currentChunk.length > headerText.length + 10) {
-      const embedding = await generateEmbedding(currentChunk);
-      if (embedding) {
-        chunks.push({ content: currentChunk, embedding });
-      }
-      currentChunk = headerText + "\n\n" + word;
-    } else {
-      currentChunk += (currentChunk.endsWith("\n\n") ? "" : " ") + word;
+  if (sentences.length === 0) {
+    const fullText = headerText + "\n\n" + cleanBody.substring(0, chunkSize);
+    const embedding = await generateEmbedding(fullText);
+    if (embedding) {
+      chunks.push({ content: fullText, embedding });
     }
+    return chunks;
   }
   
-  if (currentChunk.length > headerText.length + 10) {
-    const embedding = await generateEmbedding(currentChunk);
-    if (embedding) {
-      chunks.push({ content: currentChunk, embedding });
+  let chunkStartIdx = 0;
+  
+  while (chunkStartIdx < sentences.length) {
+    let currentChunk = "";
+    let endIdx = chunkStartIdx;
+    
+    while (endIdx < sentences.length) {
+      const nextSentence = sentences[endIdx];
+      if (currentChunk.length + nextSentence.length + 1 > chunkSize && currentChunk.length > 0) {
+        break;
+      }
+      currentChunk += (currentChunk ? " " : "") + nextSentence;
+      endIdx++;
     }
+    
+    if (currentChunk.trim().length > 10) {
+      const fullChunk = headerText + "\n\n" + currentChunk.trim();
+      const embedding = await generateEmbedding(fullChunk);
+      if (embedding) {
+        chunks.push({ content: fullChunk, embedding });
+      }
+    }
+    
+    if (endIdx >= sentences.length) {
+      break;
+    }
+    
+    chunkStartIdx = Math.max(chunkStartIdx + 1, endIdx - overlapSentences);
   }
   
   if (chunks.length === 0) {
@@ -286,4 +320,25 @@ export async function generateEmailChunks(
   }
   
   return chunks;
+}
+
+export function getShipbuildingSystemPrompt(emailContext: string): string {
+  return `당신은 조선소 이메일 관리와 일정 정리를 전문으로 하는 AI 비서입니다.
+
+## 전문 영역
+- 선박 건조 프로젝트 관리 (S/C, 진수, 시운전, 가스시운전, 인도, K/L)
+- 조선소 회의 및 일정 조율
+- 호선번호 기반 프로젝트 추적
+- 기술 문서 및 도면 관련 커뮤니케이션
+
+## 응답 지침
+1. 호선번호가 언급되면 해당 프로젝트의 맥락을 파악하세요
+2. 일정 관련 질문에는 정확한 날짜와 시간을 명시하세요
+3. 기술 용어는 정확하게 사용하되, 필요시 간단히 설명하세요
+4. 관련 이메일 정보를 인용할 때는 출처를 명확히 하세요
+
+## 참고 이메일 정보
+${emailContext || "(관련 이메일 없음)"}
+
+위 정보를 바탕으로 사용자의 질문에 정확하고 도움이 되는 답변을 해주세요.`;
 }

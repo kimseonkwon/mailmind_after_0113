@@ -1,39 +1,27 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { 
   Search, 
-  Upload, 
   Mail, 
   Database, 
   Clock, 
   User, 
   FileText,
   AlertCircle,
-  CheckCircle2,
   Loader2,
   ChevronDown,
   ChevronUp,
   X,
-  Calendar,
   Sparkles
 } from "lucide-react";
 import type { Stats, ChatResponse, SearchResult, EventExtractionResponse } from "@shared/schema";
-
-interface ExtendedImportResult {
-  ok: boolean;
-  inserted: number;
-  classified?: number;
-  eventsExtracted?: number;
-  message?: string;
-}
 
 function StatCard({ 
   title, 
@@ -166,92 +154,6 @@ function EmailResultCard({
   );
 }
 
-function UploadDropzone({ 
-  onUpload, 
-  isUploading,
-  progress
-}: { 
-  onUpload: (file: File) => void;
-  isUploading: boolean;
-  progress: number;
-}) {
-  const [isDragging, setIsDragging] = useState(false);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      onUpload(file);
-    }
-  }, [onUpload]);
-
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      onUpload(file);
-    }
-  }, [onUpload]);
-
-  return (
-    <Card className="border-dashed">
-      <CardContent className="p-8">
-        <div
-          className={`
-            flex flex-col items-center justify-center min-h-[200px] rounded-lg border-2 border-dashed
-            transition-colors duration-200 cursor-pointer
-            ${isDragging ? 'border-primary bg-primary/5' : 'border-muted'}
-            ${isUploading ? 'pointer-events-none opacity-70' : ''}
-          `}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => !isUploading && document.getElementById('file-upload')?.click()}
-          data-testid="upload-dropzone"
-        >
-          <input
-            id="file-upload"
-            type="file"
-            accept=".pst,.json,.mbox"
-            className="hidden"
-            onChange={handleFileChange}
-            disabled={isUploading}
-          />
-          
-          {isUploading ? (
-            <div className="flex flex-col items-center gap-4 w-full max-w-xs">
-              <Loader2 className="h-12 w-12 text-primary animate-spin" />
-              <p className="text-sm text-muted-foreground">이메일 가져오는 중...</p>
-              <Progress value={progress} className="w-full" />
-              <p className="text-xs text-muted-foreground">{progress}%</p>
-            </div>
-          ) : (
-            <>
-              <Upload className="h-12 w-12 text-muted-foreground mb-4" />
-              <p className="text-lg font-medium mb-1">
-                파일을 드래그하거나 클릭하세요
-              </p>
-              <p className="text-sm text-muted-foreground">
-                PST, JSON, MBOX 파일 지원
-              </p>
-            </>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 function EmptyState({ 
   icon: Icon, 
   title, 
@@ -277,7 +179,6 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [topK, setTopK] = useState(10);
   const [expandedEmails, setExpandedEmails] = useState<Set<number>>(new Set());
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [searchResults, setSearchResults] = useState<ChatResponse | null>(null);
   const [extractingEmails, setExtractingEmails] = useState<Set<number>>(new Set());
 
@@ -342,60 +243,6 @@ export default function Home() {
     },
   });
 
-  const importMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      
-      setUploadProgress(10);
-      const interval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 10, 90));
-      }, 200);
-
-      try {
-        const res = await fetch("/api/import", {
-          method: "POST",
-          body: formData,
-          credentials: "include",
-        });
-        
-        clearInterval(interval);
-        setUploadProgress(100);
-        
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || res.statusText);
-        }
-        
-        return res.json() as Promise<ExtendedImportResult>;
-      } catch (error) {
-        clearInterval(interval);
-        throw error;
-      }
-    },
-    onSuccess: (data) => {
-      let description = data.message || `${data.inserted}개의 이메일을 가져왔습니다.`;
-      if (data.classified && data.classified > 0) {
-        description = `${data.inserted}개 이메일 가져오기, ${data.classified}개 분류, ${data.eventsExtracted || 0}개 일정 추출 완료`;
-      }
-      toast({
-        title: "가져오기 완료",
-        description,
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
-      setUploadProgress(0);
-    },
-    onError: (error) => {
-      toast({
-        title: "가져오기 실패",
-        description: error.message,
-        variant: "destructive",
-      });
-      setUploadProgress(0);
-    },
-  });
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) {
@@ -453,7 +300,72 @@ export default function Home() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        <div className="grid gap-6 md:grid-cols-2 mb-8">
+        <Card className="mb-8">
+          <CardContent className="p-6">
+            <form onSubmit={handleSearch} className="space-y-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="search"
+                  placeholder="검색어를 입력하세요..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 pr-10 h-12 text-lg"
+                  data-testid="input-search"
+                />
+                {searchQuery && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                    onClick={clearSearch}
+                    data-testid="button-clear-search"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="topK" className="text-sm text-muted-foreground whitespace-nowrap">
+                    결과 수:
+                  </label>
+                  <Input
+                    id="topK"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={topK}
+                    onChange={(e) => setTopK(parseInt(e.target.value) || 10)}
+                    className="w-20"
+                    data-testid="input-topk"
+                  />
+                </div>
+                <Button 
+                  type="submit" 
+                  className="flex-1"
+                  disabled={searchMutation.isPending || !searchQuery.trim()}
+                  data-testid="button-search"
+                >
+                  {searchMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      검색 중...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-4 w-4" />
+                      검색
+                    </>
+                  )}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-4 md:grid-cols-2 mb-8">
           <StatCard
             title="총 이메일"
             value={stats?.emailsCount.toLocaleString() ?? "0"}
@@ -468,91 +380,6 @@ export default function Home() {
             icon={Database}
             loading={statsLoading}
           />
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-2 mb-8">
-          <div>
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Upload className="h-5 w-5" />
-              이메일 가져오기
-            </h2>
-            <UploadDropzone
-              onUpload={(file) => importMutation.mutate(file)}
-              isUploading={importMutation.isPending}
-              progress={uploadProgress}
-            />
-          </div>
-
-          <div>
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Search className="h-5 w-5" />
-              이메일 검색
-            </h2>
-            <Card>
-              <CardContent className="p-6">
-                <form onSubmit={handleSearch} className="space-y-4">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      type="search"
-                      placeholder="검색어를 입력하세요..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-10 pr-10"
-                      data-testid="input-search"
-                    />
-                    {searchQuery && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                        onClick={clearSearch}
-                        data-testid="button-clear-search"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      <label htmlFor="topK" className="text-sm text-muted-foreground whitespace-nowrap">
-                        결과 수:
-                      </label>
-                      <Input
-                        id="topK"
-                        type="number"
-                        min={1}
-                        max={50}
-                        value={topK}
-                        onChange={(e) => setTopK(parseInt(e.target.value) || 10)}
-                        className="w-20"
-                        data-testid="input-topk"
-                      />
-                    </div>
-                    <Button 
-                      type="submit" 
-                      className="flex-1"
-                      disabled={searchMutation.isPending || !searchQuery.trim()}
-                      data-testid="button-search"
-                    >
-                      {searchMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          검색 중...
-                        </>
-                      ) : (
-                        <>
-                          <Search className="h-4 w-4" />
-                          검색
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </form>
-              </CardContent>
-            </Card>
-          </div>
         </div>
 
         <section>
