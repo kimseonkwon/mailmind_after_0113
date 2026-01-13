@@ -422,7 +422,15 @@ export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTP
     const rootFolder = pstFile.getRootFolder();
     processFolder(rootFolder, emails, errors, opts);
   } catch (err) {
-    errors.push(`Failed to open PST file: ${err instanceof Error ? err.message : "Unknown error"}`);
+    const errMsg = err instanceof Error ? err.message : "Unknown error";
+    
+    if (errMsg.includes("findBtreeItem") || errMsg.includes("Unable to find")) {
+      errors.push(`PST 파일 형식 오류: 이 PST 파일은 지원되지 않는 형식입니다. Outlook에서 PST 파일을 다시 내보내거나, JSON 형식으로 변환하여 가져오기를 시도해주세요. (${errMsg})`);
+    } else if (errMsg.includes("password") || errMsg.includes("encrypted")) {
+      errors.push(`PST 파일이 암호로 보호되어 있습니다. 암호를 해제한 후 다시 시도해주세요.`);
+    } else {
+      errors.push(`PST 파일 열기 실패: ${errMsg}`);
+    }
   }
 
   return {
