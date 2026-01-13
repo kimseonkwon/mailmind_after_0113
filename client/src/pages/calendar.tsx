@@ -24,16 +24,15 @@ import { Button } from "@/components/ui/button";
 import type { CalendarEvent, Email } from "@shared/schema";
 
 import Calendar from "react-calendar";
-import "react-calendar/dist/Calendar.css";
 
 const EVENT_CATEGORIES = [
-  { keyword: "회의", color: "#3b82f6", label: "회의" },
-  { keyword: "s/c", color: "#8b5cf6", label: "S/C(Steel Cutting)" },
-  { keyword: "진수", color: "#f97316", label: "진수" },
-  { keyword: "시운전", color: "#22c55e", label: "시운전" },
-  { keyword: "가스시운전", color: "#06b6d4", label: "가스시운전" },
-  { keyword: "인도", color: "#eab308", label: "인도" },
-  { keyword: "k/l", color: "#ef4444", label: "K/L(Keel Laying)" },
+  { keyword: "회의", colorClass: "bg-blue-500 dark:bg-blue-600", dotColor: "bg-blue-500", label: "회의" },
+  { keyword: "s/c", colorClass: "bg-violet-500 dark:bg-violet-600", dotColor: "bg-violet-500", label: "S/C(Steel Cutting)" },
+  { keyword: "진수", colorClass: "bg-orange-500 dark:bg-orange-600", dotColor: "bg-orange-500", label: "진수" },
+  { keyword: "시운전", colorClass: "bg-green-500 dark:bg-green-600", dotColor: "bg-green-500", label: "시운전" },
+  { keyword: "가스시운전", colorClass: "bg-cyan-500 dark:bg-cyan-600", dotColor: "bg-cyan-500", label: "가스시운전" },
+  { keyword: "인도", colorClass: "bg-yellow-500 dark:bg-yellow-600", dotColor: "bg-yellow-500", label: "인도" },
+  { keyword: "k/l", colorClass: "bg-red-500 dark:bg-red-600", dotColor: "bg-red-500", label: "K/L(Keel Laying)" },
 ] as const;
 
 type EventCategory = typeof EVENT_CATEGORIES[number];
@@ -50,14 +49,13 @@ function EventCard({ event, onClick }: { event: CalendarEvent; onClick: () => vo
   const category = getEventCategory(event.title);
 
   return (
-    <Card className="hover-elevate cursor-pointer" onClick={onClick}>
+    <Card className="hover-elevate cursor-pointer" onClick={onClick} data-testid={`event-card-${event.id}`}>
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               <Badge 
-                className="text-xs px-2 py-0.5" 
-                style={{ backgroundColor: category.color, color: 'white' }}
+                className={`text-xs px-2 py-0.5 text-white ${category.colorClass}`}
               >
                 {category.label}
               </Badge>
@@ -180,10 +178,7 @@ export default function CalendarPage() {
             <div className="flex flex-wrap gap-3">
               {EVENT_CATEGORIES.map((cat) => (
                 <div key={cat.keyword} className="flex items-center gap-1.5 text-sm">
-                  <div
-                    className="h-3 w-3 rounded-full"
-                    style={{ backgroundColor: cat.color }}
-                  />
+                  <div className={`h-3 w-3 rounded-full ${cat.dotColor}`} />
                   <span>{cat.label}</span>
                 </div>
               ))}
@@ -215,8 +210,7 @@ export default function CalendarPage() {
                         {sample.map((ev) => (
                           <span
                             key={ev.id}
-                            className="inline-block h-1.5 w-1.5 rounded-full"
-                            style={{ backgroundColor: getEventCategory(ev.title).color }}
+                            className={`inline-block h-1.5 w-1.5 rounded-full ${getEventCategory(ev.title).dotColor}`}
                           />
                         ))}
                       </div>
@@ -309,8 +303,7 @@ export default function CalendarPage() {
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 mb-4 flex-wrap">
                     <Badge 
-                      className="text-xs px-2 py-0.5" 
-                      style={{ backgroundColor: getEventCategory(selectedEvent.title).color, color: 'white' }}
+                      className={`text-xs px-2 py-0.5 text-white ${getEventCategory(selectedEvent.title).colorClass}`}
                     >
                       {getEventCategory(selectedEvent.title).label}
                     </Badge>
