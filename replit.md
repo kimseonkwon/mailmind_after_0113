@@ -41,6 +41,7 @@ LLM Provider: Local Ollama server (default: http://localhost:11434)
   - `messages`: Chat messages (user/assistant roles)
   - `calendarEvents`: Extracted calendar events from emails
   - `appSettings`: Application configuration storage
+  - `ragChunks`: Vector embeddings for RAG (emailId, chunkIndex, content, embedding)
 - **Validation**: Zod schemas generated from Drizzle for type-safe API contracts
 - **Storage Modes**:
   - PostgreSQL (default): Cloud database via DATABASE_URL
@@ -52,17 +53,20 @@ LLM Provider: Local Ollama server (default: http://localhost:11434)
 - Returns results ordered by relevance score
 
 ### AI Features
-- **AI Chat (RAG)**: Chat with local Llama model via Ollama, uses uploaded emails as context for better responses
-- **Email Classification**: Automatic categorization into reference (단순 참조), reply_needed (회신 필요), urgent_reply (긴급 회신), meeting (회의)
+- **AI Chat (Vector RAG)**: Chat with local Llama model via Ollama, uses vector embeddings for semantic search with automatic fallback to keyword search
+- **Vector Embeddings**: nomic-embed-text model generates embeddings for all imported emails (OLLAMA_EMBED_MODEL env var configurable)
+- **Semantic Search**: Cosine similarity-based search across email chunks for more accurate context retrieval
+- **Email Classification**: Automatic categorization into task, meeting, approval, notice
 - **Calendar Event Extraction**: AI-powered extraction of dates, times, and event details from emails (auto-triggered on import)
-- **Environment**: OLLAMA_BASE_URL (default: http://localhost:11434)
+- **Environment**: OLLAMA_BASE_URL (default: http://localhost:11434), OLLAMA_EMBED_MODEL (default: nomic-embed-text)
 
 ### Auto-Processing on Import
 When emails are imported (PST or JSON), the system automatically:
 1. Parses and stores email data
 2. Classifies each email into categories (if Ollama connected)
 3. Extracts calendar events from email content (if Ollama connected)
-4. Updates the calendar view with extracted events
+4. Generates vector embeddings for RAG using nomic-embed-text (if Ollama connected)
+5. Updates the calendar view with extracted events
 
 ### Build Process
 - Frontend: Vite builds to `dist/public`
