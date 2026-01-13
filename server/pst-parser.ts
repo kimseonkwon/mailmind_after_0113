@@ -1,7 +1,9 @@
-import { PSTFile, PSTFolder, PSTMessage } from 'pst-extractor';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { PSTFile, PSTFolder, PSTMessage } from "pst-extractor";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import * as iconv from "iconv-lite";
+import { htmlToText } from "html-to-text";
 
 export interface ParsedEmail {
   subject: string;
@@ -10,6 +12,15 @@ export interface ParsedEmail {
   body: string;
   importance?: string;
   label?: string;
+  attachments?: ParsedAttachment[];
+}
+
+export interface ParsedAttachment {
+  originalName: string;
+  storedName: string;
+  relPath: string;
+  size: number;
+  mime?: string;
 }
 
 export interface PSTParseResult {
@@ -17,6 +28,78 @@ export interface PSTParseResult {
   totalCount: number;
   errorCount: number;
   errors: string[];
+}
+
+export interface PSTParseOptions {
+  saveAttachments?: boolean;
+  attachmentsDir?: string;
+}
+
+function safeBasename(name: string): string {
+  const trimmed = (name || "").trim() || "attachment";
+  return trimmed
+    .replace(/[\\/]/g, "_")
+    .replace(/[:*?"<>|]/g, "_")
+    .replace(/[\u0000-\u001F]/g, "")
+    .slice(0, 180);
+}
+
+function ensureDir(dir: string) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function writeNodeInputStreamToFile(stream: any, outPath: string) {
+  const fd = fs.openSync(outPath, "w");
+  try {
+    const buf = Buffer.alloc(8176);
+    while (true) {
+      const n = stream.readBlock(buf);
+      if (!n || n <= 0) break;
+      fs.writeSync(fd, buf.subarray(0, n));
+    }
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+    }
+  }
+}
+
+function decodeText(text: string | null | undefined): string {
+  if (!text) return "";
+
+  try {
+    if (!/[\uFFFD\x00-\x08\x0B\x0C\x0E-\x1F]/.test(text)) {
+      return text;
+    }
+
+    let buffer: Buffer;
+
+    if (text.includes("\uFFFD") || /[\x80-\xFF]/.test(text)) {
+      buffer = Buffer.from(text, "latin1");
+    } else {
+      buffer = Buffer.from(text, "utf-8");
+    }
+
+    const utf8Text = buffer.toString("utf-8");
+    if (!utf8Text.includes("\uFFFD") && !/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(utf8Text)) {
+      return utf8Text;
+    }
+
+    try {
+      const cp949Text = iconv.decode(buffer, "cp949");
+      if (!cp949Text.includes("\uFFFD")) return cp949Text;
+    } catch {}
+
+    try {
+      const eucKrText = iconv.decode(buffer, "euc-kr");
+      if (!eucKrText.includes("\uFFFD")) return eucKrText;
+    } catch {}
+
+    return text;
+  } catch {
+    return text || "";
+  }
 }
 
 function formatDate(date: Date | null): string {
@@ -30,18 +113,273 @@ function formatDate(date: Date | null): string {
 
 function getImportance(importance: number): string {
   switch (importance) {
-    case 2: return "high";
-    case 0: return "low";
-    default: return "normal";
+    case 2:
+      return "high";
+    case 0:
+      return "low";
+    default:
+      return "normal";
   }
 }
 
-function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[]): void {
+function looksLikeHtml(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.startsWith("<!DOCTYPE")) return true;
+  if (/<(html|head|meta|body|span|font|div|p|br|table)\b/i.test(t)) return true;
+  if (/Converted from text\/rtf/i.test(t)) return true;
+  return false;
+}
+
+function htmlToPlainText(html: string): string {
+  try {
+    return htmlToText(html, {
+      wordwrap: false,
+      selectors: [
+        { selector: "img", format: "skip" },
+        { selector: "style", format: "skip" },
+        { selector: "script", format: "skip" },
+      ],
+    }).trim();
+  } catch {
+    return html
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+}
+
+function stripInjectedHeaderBlock(text: string): string {
+  if (!text) return "";
+
+  const normalized = text.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+
+  let start = 0;
+  while (start < lines.length && lines[start].trim() === "") start++;
+
+  const headerKeys = [
+    /^stage\s*:/i,
+    /^from\s*:/i,
+    /^to\s*:/i,
+    /^cc\s*:/i,
+    /^bcc\s*:/i,
+    /^reply\s*required\s*:/i,
+    /^date\s*:/i,
+    /^sent\s*:/i,
+    /^subject\s*:/i,
+  ];
+
+  let idx = start;
+  let headerLineCount = 0;
+  let consumed = 0;
+
+  for (; idx < Math.min(lines.length, start + 15); idx++) {
+    const t = lines[idx].trim();
+
+    if (t === "") {
+      consumed++;
+      break;
+    }
+
+    if (headerKeys.some((re) => re.test(t))) {
+      headerLineCount++;
+      consumed++;
+      continue;
+    }
+
+    break;
+  }
+
+  if (headerLineCount >= 3) {
+    const rest = lines.slice(start + consumed);
+    while (rest.length && rest[0].trim() === "") rest.shift();
+    return rest.join("\n").trim();
+  }
+
+  return normalized.trim();
+}
+
+function normalizeBody(text: string): string {
+  if (!text) return "";
+
+  let t = text;
+  t = stripInjectedHeaderBlock(t);
+  t = t
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n");
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  return t.trim();
+}
+
+function extractBody(email: PSTMessage): string {
+  const bodyRaw = decodeText(email.body);
+  const htmlRaw = decodeText(email.bodyHTML);
+
+  let result = "";
+
+  if (bodyRaw && bodyRaw.trim().length > 0 && !looksLikeHtml(bodyRaw)) {
+    result = bodyRaw.trim();
+    return normalizeBody(result);
+  }
+
+  if (bodyRaw && bodyRaw.trim().length > 0 && looksLikeHtml(bodyRaw)) {
+    const converted = htmlToPlainText(bodyRaw);
+    if (converted) {
+      result = converted;
+      return normalizeBody(result);
+    }
+  }
+
+  if (htmlRaw && htmlRaw.trim().length > 0) {
+    const converted = htmlToPlainText(htmlRaw);
+    if (converted) {
+      result = converted;
+      return normalizeBody(result);
+    }
+  }
+
+  result = (bodyRaw || htmlRaw || "").trim();
+  return normalizeBody(result);
+}
+
+function extractSenderFromInjectedBodyBlock(rawText: string): string {
+  if (!rawText) return "";
+
+  const text = rawText.replace(/\r\n/g, "\n").trim();
+
+  const m1 = text.match(/(?:^|\n)\s*From:\s*([^\n]+)/i);
+  if (m1?.[1]) return m1[1].trim();
+
+  const m2 = text.match(/From:\s*(.+?)(?=\s+To:|\s+Cc:|\s+Bcc:|\s+Reply\s*Required:|\s+Date:|\n|$)/i);
+  if (m2?.[1]) return m2[1].trim();
+
+  const m3 = text.match(/(?:^|\n)\s*Sender:\s*([^\n]+)/i);
+  if (m3?.[1]) return m3[1].trim();
+
+  return "";
+}
+
+function extractSender(email: PSTMessage): string {
+  const e = email as any;
+
+  const direct =
+    decodeText(e.senderEmailAddress) ||
+    decodeText(e.senderName) ||
+    decodeText(e.sentRepresentingEmailAddress) ||
+    decodeText(e.sentRepresentingName) ||
+    decodeText(e.senderSmtpAddress) ||
+    decodeText(e.sentRepresentingSmtpAddress) ||
+    "";
+
+  if (direct.trim()) return direct.trim();
+
+  const headerCandidates = [
+    e.transportMessageHeaders,
+    e.internetMessageHeaders,
+    e.messageHeaders,
+    e.headers,
+    e.header,
+  ];
+
+  for (const hc of headerCandidates) {
+    const headers = decodeText(hc) || "";
+    if (!headers) continue;
+
+    const fromLine =
+      headers.match(/^From:\s*(.+)$/im)?.[1]?.trim() ||
+      headers.match(/^Sender:\s*(.+)$/im)?.[1]?.trim() ||
+      "";
+
+    if (fromLine) return fromLine;
+  }
+
+  const bodyRaw = decodeText(email.body);
+  const htmlRaw = decodeText(email.bodyHTML);
+
+  const bodyForParse =
+    bodyRaw && looksLikeHtml(bodyRaw) ? htmlToPlainText(bodyRaw) : bodyRaw;
+
+  const htmlForParse = htmlRaw ? htmlToPlainText(htmlRaw) : "";
+
+  const from1 = extractSenderFromInjectedBodyBlock(bodyForParse || "");
+  if (from1) return from1;
+
+  const from2 = extractSenderFromInjectedBodyBlock(htmlForParse || "");
+  if (from2) return from2;
+
+  return "";
+}
+
+function extractAttachments(
+  email: PSTMessage,
+  opts: PSTParseOptions,
+  errors: string[],
+  emailKey: string
+): ParsedAttachment[] {
+  if (!opts.saveAttachments || !opts.attachmentsDir) return [];
+
+  try {
+    ensureDir(opts.attachmentsDir);
+  } catch (e) {
+    errors.push(`Failed to create attachments dir: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    return [];
+  }
+
+  const out: ParsedAttachment[] = [];
+  const count = (email as any).numberOfAttachments ?? 0;
+  if (!count || count <= 0) return out;
+
+  const relDir = path.join('_pst', emailKey);
+  const absDir = path.join(opts.attachmentsDir, relDir);
+  ensureDir(absDir);
+
+  for (let i = 0; i < count; i++) {
+    try {
+      const att: any = (email as any).getAttachment(i);
+      const originalNameRaw = decodeText(att?.longFilename) || decodeText(att?.filename) || `attachment_${i}`;
+      const originalName = safeBasename(originalNameRaw);
+
+      const mime = decodeText(att?.mimeTag) || undefined;
+      const size = Number(att?.filesize ?? att?.size ?? 0) || 0;
+
+      const storedName = `${String(i).padStart(3, '0')}-${Date.now()}-${originalName}`;
+      const relPath = path.join(relDir, storedName);
+      const absPath = path.join(opts.attachmentsDir, relPath);
+
+      const stream = att?.fileInputStream;
+      if (!stream) {
+        errors.push(`Attachment has no fileInputStream (emailKey=${emailKey}, index=${i}, name=${originalNameRaw})`);
+        continue;
+      }
+
+      writeNodeInputStreamToFile(stream, absPath);
+
+      out.push({
+        originalName: originalNameRaw || originalName,
+        storedName,
+        relPath,
+        size: size || (fs.existsSync(absPath) ? fs.statSync(absPath).size : 0),
+        mime,
+      });
+    } catch (err) {
+      errors.push(`Error extracting attachment (emailKey=${emailKey}, idx=${i}): ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }
+
+  return out;
+}
+
+function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[], opts: PSTParseOptions): void {
   try {
     if (folder.hasSubfolders) {
       const subFolders = folder.getSubFolders();
       for (const subFolder of subFolders) {
-        processFolder(subFolder, emails, errors);
+        processFolder(subFolder, emails, errors, opts);
       }
     }
 
@@ -49,36 +387,42 @@ function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[
       let email: PSTMessage | null = folder.getNextChild();
       while (email !== null) {
         try {
+          const emailKey = `${emails.length + 1}_${Date.now()}`;
+
+          const attachments = extractAttachments(email, opts, errors, emailKey);
           const parsed: ParsedEmail = {
-            subject: email.subject || "(제목 없음)",
-            sender: email.senderEmailAddress || email.senderName || "",
+            subject: decodeText(email.subject) || "(제목 없음)",
+            sender: extractSender(email),
             date: formatDate(email.messageDeliveryTime || email.clientSubmitTime),
-            body: email.body || email.bodyHTML || "",
+            body: extractBody(email),
             importance: getImportance(email.importance),
-            label: folder.displayName || undefined,
+            label: decodeText(folder.displayName) || undefined,
+            attachments,
           };
           emails.push(parsed);
         } catch (err) {
-          errors.push(`Error parsing email: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          errors.push(`Error parsing email: ${err instanceof Error ? err.message : "Unknown error"}`);
         }
         email = folder.getNextChild();
       }
     }
   } catch (err) {
-    errors.push(`Error processing folder ${folder.displayName}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    errors.push(
+      `Error processing folder ${folder.displayName}: ${err instanceof Error ? err.message : "Unknown error"}`
+    );
   }
 }
 
-export function parsePSTFile(filePath: string): PSTParseResult {
+export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTParseResult {
   const emails: ParsedEmail[] = [];
   const errors: string[] = [];
 
   try {
     const pstFile = new PSTFile(filePath);
     const rootFolder = pstFile.getRootFolder();
-    processFolder(rootFolder, emails, errors);
+    processFolder(rootFolder, emails, errors, opts);
   } catch (err) {
-    errors.push(`Failed to open PST file: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    errors.push(`Failed to open PST file: ${err instanceof Error ? err.message : "Unknown error"}`);
   }
 
   return {
@@ -89,13 +433,13 @@ export function parsePSTFile(filePath: string): PSTParseResult {
   };
 }
 
-export function parsePSTFromBuffer(buffer: Buffer, filename: string): PSTParseResult {
+export function parsePSTFromBuffer(buffer: Buffer, filename: string, opts: PSTParseOptions = {}): PSTParseResult {
   const tempDir = os.tmpdir();
   const tempPath = path.join(tempDir, `pst_${Date.now()}_${filename}`);
-  
+
   try {
     fs.writeFileSync(tempPath, buffer);
-    const result = parsePSTFile(tempPath);
+    const result = parsePSTFile(tempPath, opts);
     return result;
   } finally {
     try {

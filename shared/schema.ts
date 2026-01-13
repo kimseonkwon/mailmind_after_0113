@@ -140,6 +140,7 @@ export const calendarEvents = pgTable("calendar_events", {
   endDate: text("end_date"),
   location: text("location"),
   description: text("description"),
+  shipNumber: text("ship_number"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

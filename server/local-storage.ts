@@ -17,7 +17,7 @@ import type {
   CalendarEvent,
   InsertCalendarEvent,
 } from "@shared/schema";
-import type { IStorage } from "./storage";
+import type { IStorage, InsertEmailAttachment, EmailAttachment } from "./storage";
 
 function tokenize(query: string): string[] {
   return (query || "").trim().split(/\s+/).filter(t => t.length > 0);
@@ -105,6 +105,18 @@ export class LocalSQLiteStorage implements IStorage {
         end_date TEXT,
         location TEXT,
         description TEXT,
+        ship_number TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS email_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email_id INTEGER NOT NULL,
+        filename TEXT NOT NULL,
+        rel_path TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        mime TEXT,
+        original_name TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -419,9 +431,9 @@ export class LocalSQLiteStorage implements IStorage {
 
   async addCalendarEvent(event: InsertCalendarEvent): Promise<CalendarEvent> {
     const result = this.db.prepare(`
-      INSERT INTO calendar_events (email_id, title, start_date, end_date, location, description)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(event.emailId || null, event.title, event.startDate, event.endDate || null, event.location || null, event.description || null);
+      INSERT INTO calendar_events (email_id, title, start_date, end_date, location, description, ship_number)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(event.emailId || null, event.title, event.startDate, event.endDate || null, event.location || null, event.description || null, event.shipNumber || null);
     
     return {
       id: result.lastInsertRowid as number,
@@ -431,12 +443,13 @@ export class LocalSQLiteStorage implements IStorage {
       endDate: event.endDate || null,
       location: event.location || null,
       description: event.description || null,
+      shipNumber: event.shipNumber || null,
       createdAt: new Date(),
     };
   }
 
   async getCalendarEvents(): Promise<CalendarEvent[]> {
-    const rows = this.db.prepare('SELECT * FROM calendar_events ORDER BY created_at DESC').all() as Array<{ id: number; email_id: number | null; title: string; start_date: string; end_date: string | null; location: string | null; description: string | null; created_at: string }>;
+    const rows = this.db.prepare('SELECT * FROM calendar_events ORDER BY created_at DESC').all() as Array<{ id: number; email_id: number | null; title: string; start_date: string; end_date: string | null; location: string | null; description: string | null; ship_number: string | null; created_at: string }>;
     return rows.map(row => ({
       id: row.id,
       emailId: row.email_id,
@@ -445,12 +458,13 @@ export class LocalSQLiteStorage implements IStorage {
       endDate: row.end_date,
       location: row.location,
       description: row.description,
+      shipNumber: row.ship_number,
       createdAt: new Date(row.created_at),
     }));
   }
 
   async getCalendarEventsByEmailId(emailId: number): Promise<CalendarEvent[]> {
-    const rows = this.db.prepare('SELECT * FROM calendar_events WHERE email_id = ? ORDER BY created_at DESC').all(emailId) as Array<{ id: number; email_id: number | null; title: string; start_date: string; end_date: string | null; location: string | null; description: string | null; created_at: string }>;
+    const rows = this.db.prepare('SELECT * FROM calendar_events WHERE email_id = ? ORDER BY created_at DESC').all(emailId) as Array<{ id: number; email_id: number | null; title: string; start_date: string; end_date: string | null; location: string | null; description: string | null; ship_number: string | null; created_at: string }>;
     return rows.map(row => ({
       id: row.id,
       emailId: row.email_id,
@@ -459,8 +473,15 @@ export class LocalSQLiteStorage implements IStorage {
       endDate: row.end_date,
       location: row.location,
       description: row.description,
+      shipNumber: row.ship_number,
       createdAt: new Date(row.created_at),
     }));
+  }
+
+  async clearCalendarEvents(): Promise<number> {
+    const countBefore = (this.db.prepare('SELECT COUNT(*) as count FROM calendar_events').get() as { count: number }).count;
+    this.db.prepare('DELETE FROM calendar_events').run();
+    return countBefore;
   }
 
   async getAppSetting(key: string): Promise<string | null> {
@@ -475,5 +496,49 @@ export class LocalSQLiteStorage implements IStorage {
     } else {
       this.db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)').run(key, value);
     }
+  }
+
+  async addEmailAttachments(emailId: number, attachments: InsertEmailAttachment[]): Promise<number> {
+    if (attachments.length === 0) return 0;
+    
+    const insert = this.db.prepare(`
+      INSERT INTO email_attachments (email_id, filename, rel_path, size, mime, original_name)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const att of attachments) {
+      insert.run(emailId, att.filename, att.relPath, att.size, att.mime || null, att.originalName || null);
+    }
+
+    return attachments.length;
+  }
+
+  async getEmailAttachments(emailId: number): Promise<EmailAttachment[]> {
+    const rows = this.db.prepare('SELECT * FROM email_attachments WHERE email_id = ? ORDER BY id').all(emailId) as Array<{ id: number; email_id: number; filename: string; rel_path: string; size: number; mime: string | null; original_name: string | null; created_at: string }>;
+    return rows.map(row => ({
+      id: row.id,
+      emailId: row.email_id,
+      filename: row.filename,
+      relPath: row.rel_path,
+      size: row.size,
+      mime: row.mime,
+      originalName: row.original_name,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async getEmailAttachmentById(id: number): Promise<EmailAttachment | undefined> {
+    const row = this.db.prepare('SELECT * FROM email_attachments WHERE id = ?').get(id) as { id: number; email_id: number; filename: string; rel_path: string; size: number; mime: string | null; original_name: string | null; created_at: string } | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      emailId: row.email_id,
+      filename: row.filename,
+      relPath: row.rel_path,
+      size: row.size,
+      mime: row.mime,
+      originalName: row.original_name,
+      createdAt: row.created_at,
+    };
   }
 }
