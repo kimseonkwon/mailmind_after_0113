@@ -210,6 +210,23 @@ export const emailClassificationSchema = z.enum([
 
 export type EmailClassificationType = z.infer<typeof emailClassificationSchema>;
 
+export const ragChunks = pgTable("rag_chunks", {
+  id: serial("id").primaryKey(),
+  emailId: integer("email_id").notNull(),
+  chunkIndex: integer("chunk_index").notNull().default(0),
+  content: text("content").notNull(),
+  embedding: text("embedding").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertRagChunkSchema = createInsertSchema(ragChunks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertRagChunk = z.infer<typeof insertRagChunkSchema>;
+export type RagChunk = typeof ragChunks.$inferSelect;
+
 export const importWithProcessingResultSchema = z.object({
   ok: z.boolean(),
   inserted: z.number(),

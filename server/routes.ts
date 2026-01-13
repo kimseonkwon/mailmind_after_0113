@@ -13,7 +13,7 @@ import {
   type EventExtractionResponse
 } from "@shared/schema";
 import { ZodError } from "zod";
-import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail } from "./ollama";
+import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmbedding, generateEmailChunks } from "./ollama";
 import { parsePSTFromBuffer } from "./pst-parser";
 
 const upload = multer({ 
@@ -189,6 +189,7 @@ export async function registerRoutes(
 
       let classifiedCount = 0;
       let eventsExtractedCount = 0;
+      let embeddedCount = 0;
 
       const ollamaConnected = await checkOllamaConnection();
       
@@ -212,6 +213,25 @@ export async function registerRoutes(
               eventsExtractedCount++;
             }
 
+            const emailChunks = await generateEmailChunks(
+              email.id, 
+              email.subject, 
+              email.sender, 
+              email.date, 
+              email.body
+            );
+            
+            if (emailChunks.length > 0) {
+              const chunksToSave = emailChunks.map((chunk, idx) => ({
+                emailId: email.id,
+                chunkIndex: idx,
+                content: chunk.content,
+                embedding: JSON.stringify(chunk.embedding),
+              }));
+              await storage.saveRagChunks(chunksToSave);
+              embeddedCount += emailChunks.length;
+            }
+
             await storage.markEmailProcessed(email.id);
           } catch (err) {
             console.error(`Error processing email ${email.id}:`, err);
@@ -224,9 +244,10 @@ export async function registerRoutes(
         inserted: insertedCount,
         classified: classifiedCount,
         eventsExtracted: eventsExtractedCount,
+        embedded: embeddedCount,
         message: ollamaConnected 
-          ? `${insertedCount}개의 이메일을 가져왔습니다. ${classifiedCount}개 분류, ${eventsExtractedCount}개 일정 추출 완료.`
-          : `${insertedCount}개의 이메일을 가져왔습니다. AI 서버 미연결로 자동 분류/일정 추출이 건너뛰어졌습니다.`,
+          ? `${insertedCount}개의 이메일을 가져왔습니다. ${classifiedCount}개 분류, ${eventsExtractedCount}개 일정 추출, ${embeddedCount}개 벡터 임베딩 완료.`
+          : `${insertedCount}개의 이메일을 가져왔습니다. AI 서버 미연결로 자동 처리가 건너뛰어졌습니다.`,
       };
 
       res.json(result);
@@ -345,14 +366,30 @@ export async function registerRoutes(
         content: message,
       });
 
-      const relevantEmails = await storage.searchEmails(message, 5);
-      
       let emailContext = "";
-      if (relevantEmails.length > 0) {
-        const emailContextItems = relevantEmails.map((e, i) => 
-          `[이메일 ${i + 1}]\n제목: ${e.subject}\n발신자: ${e.sender}\n날짜: ${e.date}\n내용: ${e.body.substring(0, 300)}...`
-        );
-        emailContext = `\n\n참고할 관련 이메일들:\n${emailContextItems.join("\n\n")}`;
+      
+      const ragChunkCount = await storage.getRagChunkCount();
+      if (ragChunkCount > 0) {
+        const queryEmbedding = await generateEmbedding(message);
+        if (queryEmbedding) {
+          const relevantChunks = await storage.searchRagChunks(queryEmbedding, 5);
+          if (relevantChunks.length > 0) {
+            const contextItems = relevantChunks.map((r, i) => 
+              `[관련 정보 ${i + 1}] (유사도: ${(r.similarity * 100).toFixed(1)}%)\n${r.chunk.content}`
+            );
+            emailContext = `\n\n참고할 관련 이메일 정보:\n${contextItems.join("\n\n")}`;
+          }
+        }
+      }
+      
+      if (!emailContext) {
+        const relevantEmails = await storage.searchEmails(message, 5);
+        if (relevantEmails.length > 0) {
+          const emailContextItems = relevantEmails.map((e, i) => 
+            `[이메일 ${i + 1}]\n제목: ${e.subject}\n발신자: ${e.sender}\n날짜: ${e.date}\n내용: ${e.body.substring(0, 300)}...`
+          );
+          emailContext = `\n\n참고할 관련 이메일들:\n${emailContextItems.join("\n\n")}`;
+        }
       }
 
       const previousMessages = await storage.getMessages(convId);

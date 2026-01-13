@@ -19,10 +19,14 @@ import {
   calendarEvents,
   type CalendarEvent,
   type InsertCalendarEvent,
-  appSettings
+  appSettings,
+  ragChunks,
+  type RagChunk,
+  type InsertRagChunk,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, or, ilike, desc, sql } from "drizzle-orm";
+import { cosineSimilarity } from "./ollama";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -64,6 +68,11 @@ export interface IStorage {
   addEmailAttachments(emailId: number, attachments: InsertEmailAttachment[]): Promise<number>;
   getEmailAttachments(emailId: number): Promise<EmailAttachment[]>;
   getEmailAttachmentById(id: number): Promise<EmailAttachment | undefined>;
+
+  saveRagChunks(chunks: InsertRagChunk[]): Promise<number>;
+  searchRagChunks(queryEmbedding: number[], topK: number): Promise<Array<{ chunk: RagChunk; similarity: number }>>;
+  clearRagChunks(): Promise<number>;
+  getRagChunkCount(): Promise<number>;
 }
 
 export interface InsertEmailAttachment {
@@ -331,6 +340,47 @@ export class DatabaseStorage implements IStorage {
 
   async getEmailAttachmentById(_id: number): Promise<EmailAttachment | undefined> {
     return undefined;
+  }
+
+  async saveRagChunks(chunks: InsertRagChunk[]): Promise<number> {
+    if (chunks.length === 0) return 0;
+    
+    const batchSize = 50;
+    let inserted = 0;
+    
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < chunks.length; i += batchSize) {
+        const batch = chunks.slice(i, i + batchSize);
+        await tx.insert(ragChunks).values(batch);
+        inserted += batch.length;
+      }
+    });
+    
+    return inserted;
+  }
+
+  async searchRagChunks(queryEmbedding: number[], topK: number): Promise<Array<{ chunk: RagChunk; similarity: number }>> {
+    const allChunks = await db.select().from(ragChunks);
+    
+    const results = allChunks.map(chunk => {
+      const embedding = JSON.parse(chunk.embedding) as number[];
+      const similarity = cosineSimilarity(queryEmbedding, embedding);
+      return { chunk, similarity };
+    });
+    
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  async clearRagChunks(): Promise<number> {
+    const countBefore = await this.getRagChunkCount();
+    await db.delete(ragChunks);
+    return countBefore;
+  }
+
+  async getRagChunkCount(): Promise<number> {
+    const result = await db.select({ count: sql<number>`count(*)::int` }).from(ragChunks);
+    return result[0]?.count ?? 0;
   }
 }
 

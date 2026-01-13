@@ -18,6 +18,8 @@ import type {
   InsertCalendarEvent,
 } from "@shared/schema";
 import type { IStorage, InsertEmailAttachment, EmailAttachment } from "./storage";
+import type { InsertRagChunk, RagChunk } from "@shared/schema";
+import { cosineSimilarity } from "./ollama";
 
 function tokenize(query: string): string[] {
   return (query || "").trim().split(/\s+/).filter(t => t.length > 0);
@@ -117,6 +119,15 @@ export class LocalSQLiteStorage implements IStorage {
         size INTEGER NOT NULL DEFAULT 0,
         mime TEXT,
         original_name TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS rag_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email_id INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL DEFAULT 0,
+        content TEXT NOT NULL,
+        embedding TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -540,5 +551,52 @@ export class LocalSQLiteStorage implements IStorage {
       originalName: row.original_name,
       createdAt: row.created_at,
     };
+  }
+
+  async saveRagChunks(chunks: InsertRagChunk[]): Promise<number> {
+    if (chunks.length === 0) return 0;
+    
+    const insert = this.db.prepare(`
+      INSERT INTO rag_chunks (email_id, chunk_index, content, embedding)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    for (const chunk of chunks) {
+      insert.run(chunk.emailId, chunk.chunkIndex, chunk.content, chunk.embedding);
+    }
+
+    return chunks.length;
+  }
+
+  async searchRagChunks(queryEmbedding: number[], topK: number): Promise<Array<{ chunk: RagChunk; similarity: number }>> {
+    const rows = this.db.prepare('SELECT * FROM rag_chunks').all() as Array<{ id: number; email_id: number; chunk_index: number; content: string; embedding: string; created_at: string }>;
+    
+    const results = rows.map(row => {
+      const embedding = JSON.parse(row.embedding) as number[];
+      const similarity = cosineSimilarity(queryEmbedding, embedding);
+      const chunk: RagChunk = {
+        id: row.id,
+        emailId: row.email_id,
+        chunkIndex: row.chunk_index,
+        content: row.content,
+        embedding: row.embedding,
+        createdAt: new Date(row.created_at),
+      };
+      return { chunk, similarity };
+    });
+    
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  async clearRagChunks(): Promise<number> {
+    const countBefore = await this.getRagChunkCount();
+    this.db.prepare('DELETE FROM rag_chunks').run();
+    return countBefore;
+  }
+
+  async getRagChunkCount(): Promise<number> {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get() as { count: number };
+    return row.count;
   }
 }

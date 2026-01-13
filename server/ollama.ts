@@ -1,6 +1,7 @@
 import type { ExtractedEvent } from "@shared/schema";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
 
 interface OllamaMessage {
   role: "system" | "user" | "assistant";
@@ -185,4 +186,97 @@ ${contextText}
     { role: "system", content: systemPrompt },
     { role: "user", content: message },
   ]);
+}
+
+export async function generateEmbedding(text: string): Promise<number[] | null> {
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: EMBED_MODEL,
+        input: text.substring(0, 8000),
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Embedding API error: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.embeddings?.[0] || null;
+  } catch (error) {
+    console.error("Embedding generation error:", error);
+    return null;
+  }
+}
+
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+export interface RagChunk {
+  id: number;
+  emailId: number;
+  chunkIndex: number;
+  content: string;
+  embedding: number[];
+}
+
+export async function generateEmailChunks(
+  emailId: number,
+  subject: string,
+  sender: string,
+  date: string,
+  body: string,
+  chunkSize: number = 500
+): Promise<Array<{ content: string; embedding: number[] }>> {
+  const chunks: Array<{ content: string; embedding: number[] }> = [];
+  
+  const headerText = `제목: ${subject}\n발신자: ${sender}\n날짜: ${date}`;
+  
+  const cleanBody = body.replace(/\s+/g, " ").trim();
+  const words = cleanBody.split(" ");
+  
+  let currentChunk = headerText + "\n\n";
+  
+  for (const word of words) {
+    if ((currentChunk + " " + word).length > chunkSize && currentChunk.length > headerText.length + 10) {
+      const embedding = await generateEmbedding(currentChunk);
+      if (embedding) {
+        chunks.push({ content: currentChunk, embedding });
+      }
+      currentChunk = headerText + "\n\n" + word;
+    } else {
+      currentChunk += (currentChunk.endsWith("\n\n") ? "" : " ") + word;
+    }
+  }
+  
+  if (currentChunk.length > headerText.length + 10) {
+    const embedding = await generateEmbedding(currentChunk);
+    if (embedding) {
+      chunks.push({ content: currentChunk, embedding });
+    }
+  }
+  
+  if (chunks.length === 0) {
+    const fullText = headerText + "\n\n" + cleanBody.substring(0, chunkSize);
+    const embedding = await generateEmbedding(fullText);
+    if (embedding) {
+      chunks.push({ content: fullText, embedding });
+    }
+  }
+  
+  return chunks;
 }
