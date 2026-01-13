@@ -28,10 +28,10 @@ import Calendar from "react-calendar";
 const EVENT_CATEGORIES = [
   { keyword: "회의", colorClass: "bg-blue-500 dark:bg-blue-600", dotColor: "bg-blue-500", label: "회의" },
   { keyword: "s/c", colorClass: "bg-violet-500 dark:bg-violet-600", dotColor: "bg-violet-500", label: "S/C(Steel Cutting)" },
-  { keyword: "진수", colorClass: "bg-orange-500 dark:bg-orange-600", dotColor: "bg-orange-500", label: "진수" },
+  { keyword: "진수", colorClass: "bg-orange-500 dark:bg-orange-600", dotColor: "bg-orange-500", label: "L/C(LAUNCHING)" },
   { keyword: "시운전", colorClass: "bg-green-500 dark:bg-green-600", dotColor: "bg-green-500", label: "시운전" },
   { keyword: "가스시운전", colorClass: "bg-cyan-500 dark:bg-cyan-600", dotColor: "bg-cyan-500", label: "가스시운전" },
-  { keyword: "인도", colorClass: "bg-yellow-500 dark:bg-yellow-600", dotColor: "bg-yellow-500", label: "인도" },
+  { keyword: "인도", colorClass: "bg-yellow-500 dark:bg-yellow-600", dotColor: "bg-yellow-500", label: "D/L(DELIVERY)" },
   { keyword: "k/l", colorClass: "bg-red-500 dark:bg-red-600", dotColor: "bg-red-500", label: "K/L(Keel Laying)" },
 ] as const;
 
@@ -198,6 +198,7 @@ export default function CalendarPage() {
                     }
                   }}
                   value={selectedDate}
+                  formatDay={(locale, date) => date.getDate().toString()}
                   tileContent={({ date, view }) => {
                     if (view !== "month") return null;
                     const key = date.toISOString().split("T")[0];
