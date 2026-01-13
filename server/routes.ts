@@ -527,6 +527,112 @@ ${email.body}
     }
   });
 
+  app.post("/api/emails/reprocess", async (_req: Request, res: Response) => {
+    try {
+      const ollamaConnected = await checkOllamaConnection();
+      if (!ollamaConnected) {
+        res.status(503).json({ 
+          error: "Ollama 서버에 연결할 수 없습니다. Ollama가 실행 중인지 확인해주세요.",
+          ollamaConnected: false 
+        });
+        return;
+      }
+
+      const emails = await storage.getAllEmails();
+      const unprocessedEmails = emails.filter(e => !e.classification || !e.isProcessed);
+      
+      if (unprocessedEmails.length === 0) {
+        res.json({ 
+          ok: true,
+          processed: 0,
+          classified: 0,
+          eventsExtracted: 0,
+          embedded: 0,
+          message: "처리할 이메일이 없습니다. 모든 이메일이 이미 처리되었습니다."
+        });
+        return;
+      }
+
+      let classifiedCount = 0;
+      let eventsExtractedCount = 0;
+      let embeddedCount = 0;
+      let successCount = 0;
+      let failedCount = 0;
+
+      for (const email of unprocessedEmails) {
+        try {
+          if (!email.classification) {
+            const classification = await classifyEmail(email.subject, email.body, email.sender);
+            await storage.updateEmailClassification(email.id, classification.classification, classification.confidence);
+            classifiedCount++;
+          }
+
+          const existingEvents = await storage.getCalendarEventsByEmailId(email.id);
+          if (existingEvents.length === 0) {
+            const events = await extractEventsFromEmail(email.subject, email.body, email.date);
+            for (const event of events) {
+              await storage.addCalendarEvent({
+                emailId: email.id,
+                title: event.title,
+                startDate: event.startDate,
+                endDate: event.endDate || null,
+                location: event.location || null,
+                description: event.description || null,
+              });
+              eventsExtractedCount++;
+            }
+          }
+
+          const existingChunks = await storage.getRagChunksByEmailId(email.id);
+          if (existingChunks.length === 0) {
+            const emailChunks = await generateEmailChunks(
+              email.id, 
+              email.subject, 
+              email.sender, 
+              email.date, 
+              email.body
+            );
+            
+            if (emailChunks.length > 0) {
+              const chunksToSave = emailChunks.map((chunk, idx) => ({
+                emailId: email.id,
+                chunkIndex: idx,
+                content: chunk.content,
+                embedding: JSON.stringify(chunk.embedding),
+              }));
+              await storage.saveRagChunks(chunksToSave);
+              embeddedCount += emailChunks.length;
+            }
+          }
+
+          await storage.markEmailProcessed(email.id);
+          successCount++;
+        } catch (err) {
+          console.error(`Error reprocessing email ${email.id}:`, err);
+          failedCount++;
+        }
+      }
+
+      const message = failedCount > 0
+        ? `${successCount}개 이메일 처리 완료, ${failedCount}개 실패. 분류: ${classifiedCount}개, 일정: ${eventsExtractedCount}개, 임베딩: ${embeddedCount}개 청크`
+        : `${successCount}개 이메일 재처리 완료. 분류: ${classifiedCount}개, 일정: ${eventsExtractedCount}개, 임베딩: ${embeddedCount}개 청크`;
+
+      res.json({ 
+        ok: failedCount === 0,
+        ollamaConnected: true,
+        processed: successCount,
+        failed: failedCount,
+        classified: classifiedCount,
+        eventsExtracted: eventsExtractedCount,
+        embedded: embeddedCount,
+        message
+      });
+    } catch (error) {
+      console.error("Reprocess error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "재처리 중 오류가 발생했습니다." });
+    }
+  });
+
   app.post("/api/events/extract", async (req: Request, res: Response) => {
     try {
       const validationResult = eventExtractionRequestSchema.safeParse(req.body);

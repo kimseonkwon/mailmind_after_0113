@@ -599,4 +599,16 @@ export class LocalSQLiteStorage implements IStorage {
     const row = this.db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get() as { count: number };
     return row.count;
   }
+
+  async getRagChunksByEmailId(emailId: number): Promise<RagChunk[]> {
+    const rows = this.db.prepare('SELECT * FROM rag_chunks WHERE email_id = ?').all(emailId) as Array<{ id: number; email_id: number; chunk_index: number; content: string; embedding: string; created_at: string }>;
+    return rows.map(row => ({
+      id: row.id,
+      emailId: row.email_id,
+      chunkIndex: row.chunk_index,
+      content: row.content,
+      embedding: row.embedding,
+      createdAt: new Date(row.created_at),
+    }));
+  }
 }

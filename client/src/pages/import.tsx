@@ -16,8 +16,13 @@ import {
   Loader2,
   FolderUp,
   Sparkles,
-  Calendar
+  Calendar,
+  RefreshCw,
+  Wifi,
+  WifiOff,
+  AlertCircle
 } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { Stats } from "@shared/schema";
 
 interface ExtendedImportResult {
@@ -195,6 +200,17 @@ function ImportResultCard({ result }: { result: ExtendedImportResult }) {
   );
 }
 
+interface ReprocessResult {
+  ok: boolean;
+  ollamaConnected?: boolean;
+  processed: number;
+  failed?: number;
+  classified: number;
+  eventsExtracted: number;
+  embedded: number;
+  message: string;
+}
+
 export default function ImportPage() {
   const { toast } = useToast();
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -202,6 +218,40 @@ export default function ImportPage() {
 
   const { data: stats, isLoading: statsLoading } = useQuery<Stats>({
     queryKey: ["/api/stats"],
+  });
+
+  const { data: ollamaStatus } = useQuery<{ connected: boolean; baseUrl: string }>({
+    queryKey: ["/api/ollama/status"],
+    refetchInterval: 10000,
+  });
+
+  const { data: classificationStats } = useQuery<{ total: number; unclassified: number }>({
+    queryKey: ["/api/emails/classification-stats"],
+  });
+
+  const reprocessMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/emails/reprocess");
+      return res.json() as Promise<ReprocessResult>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: data.ok ? "재처리 완료" : "일부 처리 실패",
+        description: data.message,
+        variant: data.ok ? "default" : "destructive",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/emails/classification-stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/ollama/status"] });
+    },
+    onError: (error) => {
+      toast({
+        title: "재처리 실패",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
   });
 
   const importMutation = useMutation({
@@ -270,6 +320,19 @@ export default function ImportPage() {
               </div>
             </div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant={ollamaStatus?.connected ? "default" : "destructive"} className="gap-1">
+                {ollamaStatus?.connected ? (
+                  <>
+                    <Wifi className="h-3 w-3" />
+                    Ollama 연결됨
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="h-3 w-3" />
+                    Ollama 연결 안됨
+                  </>
+                )}
+              </Badge>
               {stats && (
                 <Badge variant="outline" className="gap-1">
                   <Database className="h-3 w-3" />
@@ -298,6 +361,38 @@ export default function ImportPage() {
             loading={statsLoading}
           />
         </div>
+
+        {classificationStats && classificationStats.unclassified > 0 && (
+          <Alert className="mb-8" variant={ollamaStatus?.connected ? "default" : "destructive"}>
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>미처리 이메일 발견</AlertTitle>
+            <AlertDescription className="flex items-center justify-between">
+              <span>
+                {classificationStats.unclassified}개의 이메일이 아직 AI 처리되지 않았습니다.
+                {!ollamaStatus?.connected && " Ollama 서버에 연결해주세요."}
+              </span>
+              <Button
+                size="sm"
+                variant={ollamaStatus?.connected ? "default" : "outline"}
+                onClick={() => reprocessMutation.mutate()}
+                disabled={!ollamaStatus?.connected || reprocessMutation.isPending}
+                data-testid="button-reprocess"
+              >
+                {reprocessMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    처리 중...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    재처리
+                  </>
+                )}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
         {lastResult && !importMutation.isPending && (
           <div className="mb-8">

@@ -73,6 +73,7 @@ export interface IStorage {
   searchRagChunks(queryEmbedding: number[], topK: number): Promise<Array<{ chunk: RagChunk; similarity: number }>>;
   clearRagChunks(): Promise<number>;
   getRagChunkCount(): Promise<number>;
+  getRagChunksByEmailId(emailId: number): Promise<RagChunk[]>;
 }
 
 export interface InsertEmailAttachment {
@@ -381,6 +382,10 @@ export class DatabaseStorage implements IStorage {
   async getRagChunkCount(): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)::int` }).from(ragChunks);
     return result[0]?.count ?? 0;
+  }
+
+  async getRagChunksByEmailId(emailId: number): Promise<RagChunk[]> {
+    return await db.select().from(ragChunks).where(eq(ragChunks.emailId, emailId));
   }
 }
 
