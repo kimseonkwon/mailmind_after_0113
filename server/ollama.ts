@@ -111,7 +111,7 @@ export async function getAvailableModels(): Promise<string[]> {
   }
 }
 
-export type EmailClassification = "reference" | "reply_needed" | "urgent_reply" | "meeting";
+export type EmailClassification = "task" | "meeting" | "approval" | "notice";
 
 export interface ClassificationResult {
   classification: EmailClassification;
@@ -123,14 +123,17 @@ export async function classifyEmail(
   body: string,
   sender: string
 ): Promise<ClassificationResult> {
-  const systemPrompt = `당신은 이메일 분류 전문가입니다. 이메일을 다음 카테고리 중 하나로 분류하세요:
-- reference: 단순 참조 (정보 공유, 공지사항, 회신이 필요 없는 이메일)
-- reply_needed: 회신 필요 (답장이나 검토가 필요한 일반적인 이메일)
-- urgent_reply: 긴급 회신 (빠른 답장이 필요하거나 마감이 임박한 이메일)
-- meeting: 회의 (회의 일정, 참석 요청, 미팅 관련 이메일)
+  const systemPrompt = `당신은 이메일 분류 AI입니다.
+아래 4개 중 하나로만 반드시 분류하세요.
+
+카테고리 정의:
+- task: 업무 요청, 작업 지시, 검토 요청
+- meeting: 회의 일정, 미팅 요청, 참석 요청
+- approval: 결재 요청, 승인 요청, 검토 후 승인
+- notice: 공지, 안내, 알림, 정보 공유
 
 반드시 다음 JSON 형식으로만 응답하세요:
-{"classification": "카테고리", "confidence": "high/medium/low"}`;
+{"classification": "task | meeting | approval | notice", "confidence": "high | medium | low"}`;
 
   const userPrompt = `다음 이메일을 분류해주세요:
 발신자: ${sender}
@@ -146,15 +149,19 @@ export async function classifyEmail(
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const result = JSON.parse(jsonMatch[0]);
-      return {
-        classification: result.classification || "reference",
-        confidence: result.confidence || "medium",
-      };
+      const allowed: EmailClassification[] = ["task", "meeting", "approval", "notice"];
+      const classification: EmailClassification = allowed.includes(result.classification) 
+        ? result.classification 
+        : "task";
+      const confidence = ["high", "medium", "low"].includes(result.confidence) 
+        ? result.confidence 
+        : "medium";
+      return { classification, confidence };
     }
-    return { classification: "reference", confidence: "low" };
+    return { classification: "task", confidence: "low" };
   } catch (error) {
     console.error("Classification error:", error);
-    return { classification: "reference", confidence: "low" };
+    return { classification: "task", confidence: "low" };
   }
 }
 

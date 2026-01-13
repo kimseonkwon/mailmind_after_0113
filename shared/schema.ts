@@ -204,7 +204,7 @@ export type InsertAppSettings = z.infer<typeof insertAppSettingsSchema>;
 export type AppSettings = typeof appSettings.$inferSelect;
 
 export const emailClassificationSchema = z.enum([
-  "reference", "reply_needed", "urgent_reply", "meeting"
+  "task", "meeting", "approval", "notice"
 ]);
 
 export type EmailClassificationType = z.infer<typeof emailClassificationSchema>;
