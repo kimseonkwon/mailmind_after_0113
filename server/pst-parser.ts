@@ -4,6 +4,7 @@ import * as path from "path";
 import * as os from "os";
 import * as iconv from "iconv-lite";
 import { htmlToText } from "html-to-text";
+import { execSync, spawnSync } from "child_process";
 
 export interface ParsedEmail {
   subject: string;
@@ -413,9 +414,184 @@ function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[
   }
 }
 
+function parseWithReadpst(filePath: string, opts: PSTParseOptions = {}): PSTParseResult {
+  const emails: ParsedEmail[] = [];
+  const errors: string[] = [];
+  
+  const outputDir = path.join(os.tmpdir(), `readpst_${Date.now()}`);
+  
+  try {
+    fs.mkdirSync(outputDir, { recursive: true });
+    
+    const result = spawnSync("readpst", ["-e", "-o", outputDir, filePath], {
+      encoding: "utf-8",
+      timeout: 300000,
+    });
+    
+    if (result.error) {
+      throw new Error(`readpst 실행 오류: ${result.error.message}`);
+    }
+    
+    if (result.status !== 0 && result.stderr) {
+      console.log("readpst stderr:", result.stderr);
+    }
+    
+    const processOutputDir = (dir: string, folderLabel?: string): void => {
+      if (!fs.existsSync(dir)) return;
+      
+      const items = fs.readdirSync(dir);
+      
+      for (const item of items) {
+        const itemPath = path.join(dir, item);
+        const stat = fs.statSync(itemPath);
+        
+        if (stat.isDirectory()) {
+          processOutputDir(itemPath, item);
+        } else if (item.endsWith(".eml")) {
+          try {
+            const emlContent = fs.readFileSync(itemPath, "utf-8");
+            const parsed = parseEmlContent(emlContent, folderLabel);
+            if (parsed) {
+              emails.push(parsed);
+            }
+          } catch (e) {
+            errors.push(`EML 파싱 오류 (${item}): ${e instanceof Error ? e.message : "Unknown"}`);
+          }
+        }
+      }
+    };
+    
+    processOutputDir(outputDir);
+    
+  } catch (err) {
+    errors.push(`readpst 파싱 실패: ${err instanceof Error ? err.message : "Unknown error"}`);
+  } finally {
+    try {
+      if (fs.existsSync(outputDir)) {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  
+  return {
+    emails,
+    totalCount: emails.length,
+    errorCount: errors.length,
+    errors,
+  };
+}
+
+function parseEmlContent(content: string, label?: string): ParsedEmail | null {
+  const lines = content.split(/\r?\n/);
+  let subject = "";
+  let sender = "";
+  let date = "";
+  let inBody = false;
+  let bodyLines: string[] = [];
+  let headerName = "";
+  let headerValue = "";
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    if (!inBody) {
+      if (line === "" || line === "\r") {
+        inBody = true;
+        continue;
+      }
+      
+      if (line.startsWith(" ") || line.startsWith("\t")) {
+        headerValue += " " + line.trim();
+      } else {
+        if (headerName) {
+          applyHeader(headerName, headerValue);
+        }
+        
+        const colonIdx = line.indexOf(":");
+        if (colonIdx > 0) {
+          headerName = line.substring(0, colonIdx).toLowerCase();
+          headerValue = line.substring(colonIdx + 1).trim();
+        }
+      }
+    } else {
+      bodyLines.push(line);
+    }
+  }
+  
+  if (headerName) {
+    applyHeader(headerName, headerValue);
+  }
+  
+  function applyHeader(name: string, value: string) {
+    const decoded = decodeRfc2047(value);
+    switch (name) {
+      case "subject":
+        subject = decoded;
+        break;
+      case "from":
+        sender = decoded;
+        break;
+      case "date":
+        try {
+          const d = new Date(value);
+          if (!isNaN(d.getTime())) {
+            date = d.toISOString();
+          } else {
+            date = value;
+          }
+        } catch {
+          date = value;
+        }
+        break;
+    }
+  }
+  
+  let body = bodyLines.join("\n").trim();
+  
+  if (looksLikeHtml(body)) {
+    body = htmlToPlainText(body);
+  }
+  
+  body = normalizeBody(body);
+  
+  if (!subject && !body) {
+    return null;
+  }
+  
+  return {
+    subject: subject || "(제목 없음)",
+    sender: sender || "(발신자 없음)",
+    date,
+    body,
+    importance: "normal",
+    label,
+  };
+}
+
+function decodeRfc2047(text: string): string {
+  if (!text) return "";
+  
+  return text.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (match, charset, encoding, encoded) => {
+    try {
+      if (encoding.toUpperCase() === "B") {
+        const buf = Buffer.from(encoded, "base64");
+        return iconv.decode(buf, charset);
+      } else if (encoding.toUpperCase() === "Q") {
+        const decoded = encoded.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (m: string, hex: string) => {
+          return String.fromCharCode(parseInt(hex, 16));
+        });
+        const buf = Buffer.from(decoded, "binary");
+        return iconv.decode(buf, charset);
+      }
+    } catch {}
+    return match;
+  });
+}
+
 export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTParseResult {
   const emails: ParsedEmail[] = [];
   const errors: string[] = [];
+  let usedFallback = false;
 
   try {
     const pstFile = new PSTFile(filePath);
@@ -423,14 +599,24 @@ export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTP
     processFolder(rootFolder, emails, errors, opts);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : "Unknown error";
+    console.log(`pst-extractor 실패, readpst로 재시도: ${errMsg}`);
+    
+    const fallbackResult = parseWithReadpst(filePath, opts);
+    usedFallback = true;
+    
+    if (fallbackResult.emails.length > 0) {
+      return fallbackResult;
+    }
     
     if (errMsg.includes("findBtreeItem") || errMsg.includes("Unable to find")) {
-      errors.push(`PST 파일 형식 오류: 이 PST 파일은 지원되지 않는 형식입니다. Outlook에서 PST 파일을 다시 내보내거나, JSON 형식으로 변환하여 가져오기를 시도해주세요. (${errMsg})`);
+      errors.push(`PST 파일 형식 오류: Unicode PST 형식이지만 파싱에 실패했습니다. (${errMsg})`);
     } else if (errMsg.includes("password") || errMsg.includes("encrypted")) {
       errors.push(`PST 파일이 암호로 보호되어 있습니다. 암호를 해제한 후 다시 시도해주세요.`);
     } else {
       errors.push(`PST 파일 열기 실패: ${errMsg}`);
     }
+    
+    errors.push(...fallbackResult.errors);
   }
 
   return {
