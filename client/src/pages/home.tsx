@@ -453,7 +453,7 @@ export default function Home() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        <div className="grid gap-6 md:grid-cols-3 mb-8">
+        <div className="grid gap-6 md:grid-cols-2 mb-8">
           <StatCard
             title="총 이메일"
             value={stats?.emailsCount.toLocaleString() ?? "0"}
@@ -466,13 +466,6 @@ export default function Home() {
             value={stats?.mode ?? "확인 중..."}
             description="현재 저장 모드"
             icon={Database}
-            loading={statsLoading}
-          />
-          <StatCard
-            title="마지막 업데이트"
-            value={stats?.lastImport ?? "없음"}
-            description="최근 가져오기"
-            icon={Clock}
             loading={statsLoading}
           />
         </div>
