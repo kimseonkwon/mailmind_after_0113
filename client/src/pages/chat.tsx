@@ -17,13 +17,48 @@ import {
   Loader2,
   AlertCircle,
   Wifi,
-  WifiOff
+  WifiOff,
+  FileText,
+  Users,
+  CheckSquare,
+  Bell,
+  Reply,
+  Copy,
+  X
 } from "lucide-react";
-import type { AiChatResponse, Conversation, Message } from "@shared/schema";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { AiChatResponse, Conversation, Message, Email } from "@shared/schema";
 
 interface OllamaStatus {
   connected: boolean;
   baseUrl: string;
+}
+
+interface ClassificationStats {
+  total: number;
+  task: number;
+  meeting: number;
+  approval: number;
+  notice: number;
+  unclassified: number;
+}
+
+interface DraftReplyResponse {
+  draft: string;
+  emailId: number;
+  originalSubject: string;
 }
 
 function ChatMessage({ message, isUser }: { message: Message; isUser: boolean }) {
@@ -47,6 +82,9 @@ export default function ChatPage() {
   const { toast } = useToast();
   const [input, setInput] = useState("");
   const [currentConversationId, setCurrentConversationId] = useState<number | null>(null);
+  const [showDraftDialog, setShowDraftDialog] = useState(false);
+  const [selectedEmailId, setSelectedEmailId] = useState<string>("");
+  const [draftReply, setDraftReply] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data: ollamaStatus } = useQuery<OllamaStatus>({
@@ -61,6 +99,31 @@ export default function ChatPage() {
   const { data: messages, isLoading: msgsLoading } = useQuery<Message[]>({
     queryKey: ["/api/conversations", currentConversationId, "messages"],
     enabled: !!currentConversationId,
+  });
+
+  const { data: classificationStats } = useQuery<ClassificationStats>({
+    queryKey: ["/api/emails/classification-stats"],
+  });
+
+  const { data: emails } = useQuery<Email[]>({
+    queryKey: ["/api/emails"],
+  });
+
+  const draftMutation = useMutation({
+    mutationFn: async (emailId: number) => {
+      const response = await apiRequest("POST", "/api/ai/draft-reply", { emailId });
+      return response.json() as Promise<DraftReplyResponse>;
+    },
+    onSuccess: (data) => {
+      setDraftReply(data.draft);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "오류",
+        description: error.message || "회신 초안 생성 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
   });
 
   const chatMutation = useMutation({
@@ -107,6 +170,20 @@ export default function ChatPage() {
     queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
   };
 
+  const handleGenerateDraft = () => {
+    if (!selectedEmailId) return;
+    setDraftReply("");
+    draftMutation.mutate(parseInt(selectedEmailId));
+  };
+
+  const handleCopyDraft = () => {
+    navigator.clipboard.writeText(draftReply);
+    toast({
+      title: "복사됨",
+      description: "회신 초안이 클립보드에 복사되었습니다.",
+    });
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -140,8 +217,67 @@ export default function ChatPage() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        <div className="grid lg:grid-cols-4 gap-6 h-[calc(100vh-200px)]">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 space-y-4">
+        {classificationStats && classificationStats.total > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">이메일 분류 현황</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
+                  <CheckSquare className="h-4 w-4 text-blue-500" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">업무</p>
+                    <p className="font-semibold" data-testid="stat-task">{classificationStats.task}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
+                  <Users className="h-4 w-4 text-green-500" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">회의</p>
+                    <p className="font-semibold" data-testid="stat-meeting">{classificationStats.meeting}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
+                  <FileText className="h-4 w-4 text-orange-500" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">결재</p>
+                    <p className="font-semibold" data-testid="stat-approval">{classificationStats.approval}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
+                  <Bell className="h-4 w-4 text-purple-500" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">공지</p>
+                    <p className="font-semibold" data-testid="stat-notice">{classificationStats.notice}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
+                  <AlertCircle className="h-4 w-4 text-gray-500" />
+                  <div>
+                    <p className="text-xs text-muted-foreground">미분류</p>
+                    <p className="font-semibold" data-testid="stat-unclassified">{classificationStats.unclassified}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex justify-end">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setShowDraftDialog(true)}
+                  disabled={!ollamaStatus?.connected || !emails?.length}
+                  data-testid="button-open-draft"
+                >
+                  <Reply className="h-4 w-4 mr-2" />
+                  회신 초안 생성
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="grid lg:grid-cols-4 gap-6 h-[calc(100vh-300px)]">
           <Card className="lg:col-span-1 flex flex-col">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between gap-2">
@@ -265,6 +401,67 @@ export default function ChatPage() {
           </Card>
         </div>
       </main>
+
+      <Dialog open={showDraftDialog} onOpenChange={setShowDraftDialog}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Reply className="h-5 w-5" />
+              회신 초안 생성
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">이메일 선택</label>
+              <Select value={selectedEmailId} onValueChange={setSelectedEmailId}>
+                <SelectTrigger data-testid="select-email">
+                  <SelectValue placeholder="회신할 이메일을 선택하세요" />
+                </SelectTrigger>
+                <SelectContent>
+                  {emails?.map(email => (
+                    <SelectItem key={email.id} value={email.id.toString()}>
+                      {email.subject}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <Button 
+              onClick={handleGenerateDraft}
+              disabled={!selectedEmailId || draftMutation.isPending}
+              data-testid="button-generate-draft"
+            >
+              {draftMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  생성 중...
+                </>
+              ) : (
+                <>
+                  <Reply className="h-4 w-4 mr-2" />
+                  초안 생성
+                </>
+              )}
+            </Button>
+
+            {draftReply && (
+              <div className="flex-1 overflow-hidden flex flex-col space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">생성된 회신 초안</label>
+                  <Button variant="ghost" size="sm" onClick={handleCopyDraft} data-testid="button-copy-draft">
+                    <Copy className="h-4 w-4 mr-2" />
+                    복사
+                  </Button>
+                </div>
+                <ScrollArea className="flex-1 border rounded-lg p-4 bg-muted/30">
+                  <p className="text-sm whitespace-pre-wrap" data-testid="text-draft-reply">{draftReply}</p>
+                </ScrollArea>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

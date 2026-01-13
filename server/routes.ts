@@ -388,8 +388,8 @@ export async function registerRoutes(
         if (e.score >= 1.0) {
           keywordResults.push({
             subject: e.subject,
-            sender: e.sender,
-            date: e.date,
+            sender: e.sender || "",
+            date: e.date || "",
             body: e.body,
             score: e.score
           });
@@ -449,6 +449,81 @@ export async function registerRoutes(
     } catch (error) {
       console.error("AI chat error:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : "AI 채팅 중 오류가 발생했습니다." });
+    }
+  });
+
+  app.post("/api/ai/draft-reply", async (req: Request, res: Response) => {
+    try {
+      const { emailId } = req.body;
+      
+      if (!emailId) {
+        res.status(400).json({ error: "이메일 ID가 필요합니다." });
+        return;
+      }
+
+      const email = await storage.getEmailById(emailId);
+      if (!email) {
+        res.status(404).json({ error: "이메일을 찾을 수 없습니다." });
+        return;
+      }
+
+      const prompt = `다음 이메일에 대한 전문적인 회신 초안을 작성해주세요.
+
+원본 이메일:
+제목: ${email.subject}
+발신자: ${email.sender || "알 수 없음"}
+날짜: ${email.date || "알 수 없음"}
+내용:
+${email.body}
+
+요구사항:
+1. 조선소 업무에 적합한 전문적이고 정중한 어조 사용
+2. 원본 이메일의 요청사항이나 질문에 명확히 답변
+3. 필요한 경우 확인 사항이나 추가 정보 요청 포함
+4. 한국어로 작성
+
+회신 초안:`;
+
+      const draftReply = await chatWithOllama([
+        { role: "system", content: "당신은 조선소 업무 이메일 회신을 전문적으로 작성하는 AI 비서입니다. 정중하고 명확한 비즈니스 이메일을 작성합니다." },
+        { role: "user", content: prompt },
+      ]);
+
+      res.json({ 
+        draft: draftReply,
+        emailId,
+        originalSubject: email.subject,
+      });
+    } catch (error) {
+      console.error("Draft reply error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "회신 초안 생성 중 오류가 발생했습니다." });
+    }
+  });
+
+  app.get("/api/emails/classification-stats", async (_req: Request, res: Response) => {
+    try {
+      const emails = await storage.getAllEmails();
+      const stats = {
+        total: emails.length,
+        task: 0,
+        meeting: 0,
+        approval: 0,
+        notice: 0,
+        unclassified: 0,
+      };
+
+      for (const email of emails) {
+        if (email.classification === "task") stats.task++;
+        else if (email.classification === "meeting") stats.meeting++;
+        else if (email.classification === "approval") stats.approval++;
+        else if (email.classification === "notice") stats.notice++;
+        else stats.unclassified++;
+      }
+
+      res.json(stats);
+    } catch (error) {
+      console.error("Classification stats error:", error);
+      res.status(500).json({ error: "분류 통계를 가져오는 중 오류가 발생했습니다." });
     }
   });
 
