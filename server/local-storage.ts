@@ -143,11 +143,27 @@ export class LocalSQLiteStorage implements IStorage {
   getDataDir(): string {
     return this.dataDir;
   }
+  async searchEmailsBm25(
+  query: string,
+  topK: number
+): Promise<SearchResult[]> {
+  // SQLite 모드에서는 기존 키워드 검색 재사용
+  const results = await this.searchEmails(query, topK);
+
+  // BM25 점수 흉내 (기존 score 유지)
+  return results
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, topK);
+}
 
   async getUser(id: string): Promise<User | undefined> {
     const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as User | undefined;
     return row;
   }
+  async searchEventsByKeyword(keyword: string) {
+  // SQLite 모드에서는 events 검색을 지원하지 않음
+  return [];
+}
 
   async getUserByUsername(username: string): Promise<User | undefined> {
     const row = this.db.prepare('SELECT * FROM users WHERE username = ?').get(username) as User | undefined;
@@ -216,6 +232,7 @@ export class LocalSQLiteStorage implements IStorage {
       createdAt: new Date(),
     };
   }
+  
 
   async insertEmails(emailsToInsert: InsertEmail[]): Promise<number> {
     if (emailsToInsert.length === 0) return 0;

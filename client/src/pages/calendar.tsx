@@ -1,3 +1,12 @@
+/* 이벤트가 있는 월로 자동으로 이동 하는 코드
+useEffect(() => {
+  if (!events || events.length === 0) return;
+
+  const firstEventDate = new Date(events[0].startDate);
+  setSelectedDate(firstEventDate);
+}, [events]);
+*/
+
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
@@ -114,10 +123,15 @@ export default function CalendarPage() {
 
     for (const ev of events) {
       if (!ev.startDate) continue;
-      const dateOnly = ev.startDate.split(" ")[0];
+
+      const dateOnly = new Date(ev.startDate)
+        .toISOString()
+        .slice(0, 10); // YYYY-MM-DD
+
       if (!map.has(dateOnly)) map.set(dateOnly, []);
       map.get(dateOnly)!.push(ev);
-    }
+}
+
     return map;
   }, [events]);
 

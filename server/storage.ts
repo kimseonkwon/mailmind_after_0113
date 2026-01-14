@@ -28,6 +28,7 @@ import { db } from "./db";
 import { eq, or, ilike, desc, sql } from "drizzle-orm";
 import { cosineSimilarity } from "./ollama";
 
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -45,7 +46,14 @@ export interface IStorage {
   getUnprocessedEmails(): Promise<Email[]>;
   updateEmailClassification(id: number, classification: string, confidence: string): Promise<void>;
   markEmailProcessed(id: number): Promise<void>;
-  
+  searchEmailsBm25(query: string, topK: number): Promise<SearchResult[]>;
+  searchEventsByKeyword(keyword: string): Promise<Array<{
+  id: number;
+  title: string;
+  startDate: string;
+  endDate: string | null;
+}>>;
+
   searchEmails(query: string, topK: number): Promise<SearchResult[]>;
   
   logImport(log: InsertImportLog): Promise<ImportLog>;
@@ -156,6 +164,110 @@ export class DatabaseStorage implements IStorage {
       lastImport: lastImport?.createdAt?.toISOString() ?? null,
     };
   }
+  // server/storage.ts (DatabaseStorage 내부)
+
+private bm25Rank(docs: Array<{ id: number; text: string }>, queryTokens: string[]) {
+  const k1 = 1.2;
+  const b = 0.75;
+
+  const N = docs.length;
+  const df = new Map<string, number>();
+  const docTokens = docs.map(d => tokenize(d.text.toLowerCase()));
+
+  // df 계산
+  // df 계산
+for (const docTok of docTokens) {
+  const uniq = Array.from(new Set<string>(docTok));
+  for (const t of uniq) {
+    df.set(t, (df.get(t) || 0) + 1);
+  }
+}
+
+
+
+  const avgdl = docTokens.reduce((s, t) => s + t.length, 0) / Math.max(1, N);
+
+  const scores = docs.map((doc, i) => {
+    const tokens = docTokens[i];
+    const dl = tokens.length;
+    const tf = new Map<string, number>();
+    for (const t of tokens) tf.set(t, (tf.get(t) || 0) + 1);
+
+    let score = 0;
+    for (const q of queryTokens) {
+      const f = tf.get(q.toLowerCase()) || 0;
+      if (f === 0) continue;
+
+      const n = df.get(q.toLowerCase()) || 0;
+      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+      const denom = f + k1 * (1 - b + b * (dl / Math.max(1e-6, avgdl)));
+      score += idf * (f * (k1 + 1)) / denom;
+    }
+    return { id: doc.id, score };
+  });
+
+  return scores;
+}
+async searchEventsByKeyword(keyword: string) {
+  const q = `%${keyword}%`;
+
+  return await db
+  .select({
+    id: calendarEvents.id,
+    title: calendarEvents.title,
+    startDate: calendarEvents.startDate,
+    endDate: calendarEvents.endDate,
+  })
+  .from(calendarEvents)
+  .where(
+    or(
+      ilike(calendarEvents.title, q),
+      ilike(calendarEvents.description, q)
+    )
+  )
+  .orderBy(calendarEvents.startDate)
+  .limit(5);
+
+}
+
+
+async searchEmailsBm25(query: string, topK: number): Promise<SearchResult[]> {
+  const tokens = tokenize(query);
+  if (tokens.length === 0) return [];
+
+  // 규모가 큰 경우를 대비해 상한을 둡니다(필요 시 조정)
+  const candidates = await db.select().from(emails).limit(3000);
+
+  const docs = candidates.map(e => ({
+    id: e.id,
+    text: `${e.subject || ""} ${e.sender || ""} ${e.body || ""}`.toLowerCase()
+  }));
+
+  const scored = this.bm25Rank(docs, tokens)
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, topK));
+
+  const idSet = new Set(scored.map(s => s.id));
+  const scoreMap = new Map(scored.map(s => [s.id, s.score]));
+
+  const picked = candidates.filter(e => idSet.has(e.id));
+
+  // SearchResult로 변환
+  const results: SearchResult[] = picked.map(e => ({
+    mailId: String(e.id),
+    subject: e.subject || "",
+    sender: e.sender || null,
+    date: e.date || null,
+    body: e.body || "",
+    attachments: [],
+    score: scoreMap.get(e.id) || 0,
+  }));
+
+  results.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return results;
+}
+
 
   async insertEmail(email: InsertEmail): Promise<Email> {
     const [inserted] = await db.insert(emails).values(email).returning();

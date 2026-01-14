@@ -13,7 +13,9 @@ import {
   type EventExtractionResponse
 } from "@shared/schema";
 import { ZodError } from "zod";
-import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmbedding, generateEmailChunks, getShipbuildingSystemPrompt } from "./ollama";
+import { generateEmbedding, normalizeQuestionForRag } from "./ollama";
+
+import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmailChunks, getShipbuildingSystemPrompt } from "./ollama";
 import { parsePSTFromBuffer } from "./pst-parser";
 
 const upload = multer({ 
@@ -202,15 +204,23 @@ export async function registerRoutes(
 
             const events = await extractEventsFromEmail(email.subject, email.body, email.date);
             for (const event of events) {
-              await storage.addCalendarEvent({
-                emailId: email.id,
-                title: event.title,
-                startDate: event.startDate,
-                endDate: event.endDate || null,
-                location: event.location || null,
-                description: event.description || null,
-              });
-              eventsExtractedCount++;
+              if (!event.title || !event.startDate) {
+                console.log(`Skipping invalid event for email ${email.id}: missing title or startDate`);
+                continue;
+              }
+              try {
+                await storage.addCalendarEvent({
+                  emailId: email.id,
+                  title: event.title,
+                  startDate: event.startDate,
+                  endDate: event.endDate || null,
+                  location: event.location || null,
+                  description: event.description || null,
+                });
+                eventsExtractedCount++;
+              } catch (eventErr) {
+                console.error(`Failed to add calendar event for email ${email.id}:`, eventErr);
+              }
             }
 
             const emailChunks = await generateEmailChunks(
@@ -343,114 +353,233 @@ export async function registerRoutes(
   });
 
   app.post("/api/ai/chat", async (req: Request, res: Response) => {
-    try {
-      const validationResult = aiChatRequestSchema.safeParse(req.body);
-      
-      if (!validationResult.success) {
-        const errors = validationResult.error.errors.map(e => e.message).join(", ");
-        res.status(400).json({ error: errors || "잘못된 요청입니다." });
-        return;
-      }
+  try {
+    const validationResult = aiChatRequestSchema.safeParse(req.body);
 
-      const { message, conversationId } = validationResult.data;
-      
-      let convId = conversationId;
-      if (!convId) {
-        const newConv = await storage.createConversation({ title: message.slice(0, 50) });
-        convId = newConv.id;
-      }
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map(e => e.message).join(", ");
+      return res.status(400).json({ error: errors || "잘못된 요청입니다." });
+    }
 
-      await storage.addMessage({
-        conversationId: convId,
-        role: "user",
-        content: message,
+    const { message, conversationId } = validationResult.data;
+
+    /* =====================================================
+       0. 대화 ID 처리
+       ===================================================== */
+    let convId = conversationId;
+    if (!convId) {
+      const newConv = await storage.createConversation({
+        title: message.slice(0, 50),
       });
+      convId = newConv.id;
+    }
 
-      let emailContext = "";
-      const vectorResults: Array<{ content: string; similarity: number }> = [];
-      const keywordResults: Array<{ subject: string; sender: string; date: string; body: string; score: number }> = [];
-      
-      const ragChunkCount = await storage.getRagChunkCount();
-      if (ragChunkCount > 0) {
-        const queryEmbedding = await generateEmbedding(message);
-        if (queryEmbedding) {
-          const relevantChunks = await storage.searchRagChunks(queryEmbedding, 5);
-          for (const r of relevantChunks) {
-            if (r.similarity > 0.3) {
-              vectorResults.push({ content: r.chunk.content, similarity: r.similarity });
-            }
+    await storage.addMessage({
+      conversationId: convId,
+      role: "user",
+      content: message,
+    });
+
+    /* =====================================================
+       1. 질문 정규화
+       ===================================================== */
+    const { queryForRetrieval, queryForLLM } =
+      await normalizeQuestionForRag(message);
+
+    const retrievalQuery = queryForRetrieval || message;
+    const llmQuestion = queryForLLM || message;
+
+    /* =====================================================
+       ⭐ 1.5 일정/언제 질문 → events DB 우선 처리 (핵심)
+       ===================================================== */
+    const isScheduleQuestion = /언제|일정|날짜|시간/.test(message);
+
+    if (isScheduleQuestion) {
+      const events = await storage.searchEventsByKeyword(retrievalQuery);
+
+      if (events.length > 0) {
+        const answer = events
+          .slice(0, 3)
+          .map(e => {
+            const start = e.startDate;
+            const end = e.endDate ? ` ~ ${e.endDate}` : "";
+            return `- ${e.title}: ${start}${end}`;
+          })
+          .join("\n");
+
+        await storage.addMessage({
+          conversationId: convId,
+          role: "assistant",
+          content: answer,
+        });
+
+        return res.json({
+          response: answer,
+          conversationId: convId,
+        });
+      }
+      // events가 없으면 → 아래 RAG로 fallback
+    }
+
+    /* =====================================================
+       2. RAG 검색 (벡터 우선)
+       ===================================================== */
+    let emailContext = "";
+    const vectorResults: Array<{ content: string; similarity: number }> = [];
+    const bm25Results: Array<{
+      subject: string;
+      sender: string;
+      date: string;
+      body: string;
+      score: number;
+    }> = [];
+
+    const VECTOR_MIN_SIM = 0.35;
+    let maxSimilarity = 0;
+
+    const ragChunkCount = await storage.getRagChunkCount();
+    if (ragChunkCount > 0) {
+      const queryEmbedding = await generateEmbedding(retrievalQuery);
+      if (queryEmbedding) {
+        const relevantChunks = await storage.searchRagChunks(queryEmbedding, 3);
+        for (const r of relevantChunks) {
+          maxSimilarity = Math.max(maxSimilarity, r.similarity);
+          if (r.similarity >= VECTOR_MIN_SIM) {
+            vectorResults.push({
+              content: r.chunk.content,
+              similarity: r.similarity,
+            });
           }
         }
       }
-      
-      const relevantEmails = await storage.searchEmails(message, 10);
-      for (const e of relevantEmails) {
-        if (e.score >= 1.0) {
-          keywordResults.push({
-            subject: e.subject,
-            sender: e.sender || "",
-            date: e.date || "",
-            body: e.body,
-            score: e.score
-          });
-        }
-      }
-      keywordResults.sort((a, b) => b.score - a.score);
-      keywordResults.splice(5);
-      
-      const seenContent = new Set<string>();
-      const contextItems: string[] = [];
-      
-      for (const v of vectorResults) {
-        const key = v.content.substring(0, 100);
-        if (!seenContent.has(key)) {
-          seenContent.add(key);
-          contextItems.push(`[벡터 검색 - 유사도 ${(v.similarity * 100).toFixed(0)}%]\n${v.content}`);
-        }
-      }
-      
-      for (const k of keywordResults) {
-        const key = k.subject + k.sender;
-        if (!seenContent.has(key) && contextItems.length < 8) {
-          seenContent.add(key);
-          contextItems.push(`[키워드 검색 - 점수 ${k.score.toFixed(1)}]\n제목: ${k.subject}\n발신자: ${k.sender}\n날짜: ${k.date}\n내용: ${k.body.substring(0, 400)}...`);
-        }
-      }
-      
-      if (contextItems.length > 0) {
-        emailContext = contextItems.join("\n\n---\n\n");
-      }
+    }
 
-      const previousMessages = await storage.getMessages(convId);
-      const ollamaMessages = previousMessages.map(m => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      }));
+    /* =====================================================
+       3. 벡터 결과 없거나 약하면 → BM25 검색
+       ===================================================== */
+    const needBm25 =
+      vectorResults.length === 0 || maxSimilarity < VECTOR_MIN_SIM;
 
-      const systemPrompt = getShipbuildingSystemPrompt(emailContext);
+    if (needBm25) {
+      const bm25Emails = await storage.searchEmailsBm25(retrievalQuery, 6);
+      for (const e of bm25Emails) {
+        bm25Results.push({
+          subject: e.subject,
+          sender: e.sender || "",
+          date: e.date || "",
+          body: e.body,
+          score: e.score,
+        });
+      }
+    }
 
-      const aiResponse = await chatWithOllama([
-        { role: "system", content: systemPrompt },
-        ...ollamaMessages,
-      ]);
+    /* =====================================================
+       4. Context 병합 (최대 3개만)
+       ===================================================== */
+    const seen = new Set<string>();
+    const contextItems: string[] = [];
+
+    for (const v of vectorResults) {
+      if (contextItems.length >= 3) break;
+      const key = v.content.slice(0, 120);
+      if (!seen.has(key)) {
+        seen.add(key);
+        contextItems.push(
+          `[벡터 검색 · 유사도 ${(v.similarity * 100).toFixed(0)}%]
+${v.content}`
+        );
+      }
+    }
+
+    for (const k of bm25Results) {
+      if (contextItems.length >= 3) break;
+      const key = k.subject + k.sender;
+      if (!seen.has(key)) {
+        seen.add(key);
+        contextItems.push(
+          `[키워드 검색 · BM25 점수 ${k.score.toFixed(2)}]
+제목: ${k.subject}
+발신자: ${k.sender}
+날짜: ${k.date}
+
+${k.body.slice(0, 400)}`
+        );
+      }
+    }
+
+    if (contextItems.length > 0) {
+      emailContext = contextItems.join("\n\n---\n\n");
+    }
+
+    /* =====================================================
+       🧪 RAG DEBUG 로그
+       ===================================================== */
+    console.log("[RAG DEBUG] retrievalQuery:", retrievalQuery);
+    console.log(
+      "[RAG DEBUG] vectorResults:",
+      vectorResults.length,
+      "maxSim:",
+      maxSimilarity
+    );
+    console.log("[RAG DEBUG] bm25Results:", bm25Results.length);
+    console.log("[RAG DEBUG] emailContextLen:", emailContext?.length || 0);
+
+    /* =====================================================
+       4.5 RAG 실패 시 LLM 호출 차단
+       ===================================================== */
+    if (!emailContext || emailContext.trim().length === 0) {
+      const noDataResponse =
+        "해당 질문과 관련된 이메일을 찾지 못했습니다.";
 
       await storage.addMessage({
         conversationId: convId,
         role: "assistant",
-        content: aiResponse,
+        content: noDataResponse,
       });
 
-      const response: AiChatResponse = {
-        response: aiResponse,
+      return res.json({
+        response: noDataResponse,
         conversationId: convId,
-      };
-
-      res.json(response);
-    } catch (error) {
-      console.error("AI chat error:", error);
-      res.status(500).json({ error: error instanceof Error ? error.message : "AI 채팅 중 오류가 발생했습니다." });
+      });
     }
-  });
+
+    /* =====================================================
+       6. LLM 호출 (히스토리 ❌)
+       ===================================================== */
+    const systemPrompt = getShipbuildingSystemPrompt(emailContext);
+
+    const aiResponse = await chatWithOllama([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: llmQuestion },
+    ]);
+
+    await storage.addMessage({
+      conversationId: convId,
+      role: "assistant",
+      content: aiResponse,
+    });
+
+    /* =====================================================
+       7. 응답
+       ===================================================== */
+    return res.json({
+      response: aiResponse,
+      conversationId: convId,
+    });
+  } catch (error) {
+    console.error("AI chat error:", error);
+    return res.status(500).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "AI 채팅 중 오류가 발생했습니다.",
+    });
+  }
+});
+
+
+
+
 
   app.post("/api/ai/draft-reply", async (req: Request, res: Response) => {
     try {
@@ -571,15 +700,23 @@ ${email.body}
           if (existingEvents.length === 0) {
             const events = await extractEventsFromEmail(email.subject, email.body, email.date);
             for (const event of events) {
-              await storage.addCalendarEvent({
-                emailId: email.id,
-                title: event.title,
-                startDate: event.startDate,
-                endDate: event.endDate || null,
-                location: event.location || null,
-                description: event.description || null,
-              });
-              eventsExtractedCount++;
+              if (!event.title || !event.startDate) {
+                console.log(`Skipping invalid event for email ${email.id}: missing title or startDate`);
+                continue;
+              }
+              try {
+                await storage.addCalendarEvent({
+                  emailId: email.id,
+                  title: event.title,
+                  startDate: event.startDate,
+                  endDate: event.endDate || null,
+                  location: event.location || null,
+                  description: event.description || null,
+                });
+                eventsExtractedCount++;
+              } catch (eventErr) {
+                console.error(`Failed to add calendar event for email ${email.id}:`, eventErr);
+              }
             }
           }
 
@@ -814,15 +951,23 @@ ${email.body}
 
           const events = await extractEventsFromEmail(email.subject, email.body, email.date);
           for (const event of events) {
-            await storage.addCalendarEvent({
-              emailId: email.id,
-              title: event.title,
-              startDate: event.startDate,
-              endDate: event.endDate || null,
-              location: event.location || null,
-              description: event.description || null,
-            });
-            eventsCount++;
+            if (!event.title || !event.startDate) {
+              console.log(`Skipping invalid event for email ${email.id}: missing title or startDate`);
+              continue;
+            }
+            try {
+              await storage.addCalendarEvent({
+                emailId: email.id,
+                title: event.title,
+                startDate: event.startDate,
+                endDate: event.endDate || null,
+                location: event.location || null,
+                description: event.description || null,
+              });
+              eventsCount++;
+            } catch (eventErr) {
+              console.error(`Failed to add calendar event for email ${email.id}:`, eventErr);
+            }
           }
 
           await storage.markEmailProcessed(email.id);
