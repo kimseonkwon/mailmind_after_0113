@@ -73,17 +73,23 @@ function ChatMessage({
   onToggle: () => void;
 }) {
   const parseAssistant = (content: string) => {
-    const answerMatch = content.match(/답변:\s*-?\s*([\s\S]*?)(?:본문:|날짜:|$)/);
-    const bodyMatch = content.match(/본문:\s*-?\s*([\s\S]*?)(?:날짜:|$)/);
+    const answerMatch = content.match(/답변:\s*-?\s*([\s\S]*?)(?=제목:|발신자:|본문:|날짜:|$)/);
+    const subjectMatch = content.match(/제목:\s*-?\s*([\s\S]*?)(?=발신자:|본문:|날짜:|$)/);
+    const senderMatch = content.match(/발신자:\s*-?\s*([\s\S]*?)(?=본문:|날짜:|$)/);
+    const bodyMatch = content.match(/본문:\s*-?\s*([\s\S]*?)(?=날짜:|$)/);
     const dateMatch = content.match(/날짜:\s*-?\s*(.*)/);
     return {
       answer: (answerMatch?.[1] || content).trim(),
+      subject: (subjectMatch?.[1] || "").trim(),
+      sender: (senderMatch?.[1] || "").trim(),
       body: (bodyMatch?.[1] || "").trim(),
       date: (dateMatch?.[1] || "").trim(),
     };
   };
 
-  const { answer, body, date } = isUser ? { answer: message.content, body: "", date: "" } : parseAssistant(message.content);
+  const { answer, subject, sender, body, date } = isUser 
+    ? { answer: message.content, subject: "", sender: "", body: "", date: "" } 
+    : parseAssistant(message.content);
 
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -103,6 +109,8 @@ function ChatMessage({
             </Button>
             {isExpanded && (
               <div className="rounded-md bg-background text-foreground border p-3 space-y-1">
+                {subject && <p className="text-xs font-semibold">제목: {subject}</p>}
+                {sender && <p className="text-xs text-muted-foreground">발신자: {sender}</p>}
                 {body && <p className="text-xs whitespace-pre-wrap leading-relaxed">{body}</p>}
                 {date && <p className="text-xs text-muted-foreground">날짜: {date}</p>}
               </div>

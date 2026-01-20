@@ -435,7 +435,7 @@ export async function registerRoutes(
        2. RAG 검색 (벡터 우선)
        ===================================================== */
     let emailContext = "";
-    let bestHit: { body: string; date: string } | null = null;
+    let bestHit: { body: string; date: string; subject?: string; sender?: string } | null = null;
     const vectorResults: Array<{ content: string; similarity: number }> = [];
     const bm25Results: Array<{
       subject: string;
@@ -449,6 +449,7 @@ export async function registerRoutes(
     let maxSimilarity = 0;
 
     const ragChunkCount = await storage.getRagChunkCount();
+    let firstAboveThreshold: { content: string; similarity: number } | null = null;
     if (ragChunkCount > 0) {
       const queryEmbedding = await generateEmbedding(retrievalQuery);
       if (queryEmbedding) {
@@ -470,15 +471,40 @@ export async function registerRoutes(
 
             if (!bestHit) {
               const dateMatch = content.match(/날짜:\s*([^\n]+)/);
+              const subjectMatch = content.match(/제목:\s*([^\n]+)/);
+              const senderMatch = content.match(/발신자:\s*([^\n]+)/);
               const bodyPart = content.split("[원문 일부]")[1]?.trim() || "";
               bestHit = {
                 body: (bodyPart || content).slice(0, 400),
                 date: dateMatch ? dateMatch[1].trim() : "",
+                subject: subjectMatch ? subjectMatch[1].trim() : "",
+                sender: senderMatch ? senderMatch[1].trim() : "",
               };
             }
+          } else if (!firstAboveThreshold && r.similarity >= VECTOR_MIN_SIM) {
+            firstAboveThreshold = {
+              content: r.chunk.content,
+              similarity: r.similarity,
+            };
           }
         }
       }
+    }
+
+    // 토큰 불일치로 모두 걸러졌지만 유사도는 기준을 넘는 경우 첫 결과라도 사용
+    if (vectorResults.length === 0 && firstAboveThreshold) {
+      vectorResults.push(firstAboveThreshold);
+      const content = firstAboveThreshold.content;
+      const dateMatch = content.match(/날짜:\s*([^\n]+)/);
+      const subjectMatch = content.match(/제목:\s*([^\n]+)/);
+      const senderMatch = content.match(/발신자:\s*([^\n]+)/);
+      const bodyPart = content.split("[원문 일부]")[1]?.trim() || "";
+      bestHit = {
+        body: (bodyPart || content).slice(0, 400),
+        date: dateMatch ? dateMatch[1].trim() : "",
+        subject: subjectMatch ? subjectMatch[1].trim() : "",
+        sender: senderMatch ? senderMatch[1].trim() : "",
+      };
     }
 
     /* =====================================================
@@ -502,6 +528,8 @@ export async function registerRoutes(
           bestHit = {
             body: (e.body || "").slice(0, 400),
             date: e.date || "",
+            subject: e.subject || "",
+            sender: e.sender || "",
           };
         }
       }
@@ -604,7 +632,7 @@ ${k.body.slice(0, 400)}`
           : "관련 답변을 찾지 못했습니다")
       : `확인했습니다. ${koreanOnly}`;
 
-    const formattedResponse = `답변:\n- ${answerText}\n본문:\n- ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜:\n- ${bestHit?.date || "정보 없음"}`;
+    const formattedResponse = `답변:\n- ${answerText}\n제목:\n- ${bestHit?.subject || "정보 없음"}\n발신자:\n- ${bestHit?.sender || "정보 없음"}\n본문:\n- ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜:\n- ${bestHit?.date || "정보 없음"}`;
 
     await storage.addMessage({
       conversationId: convId,
