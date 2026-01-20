@@ -622,15 +622,15 @@ ${k.body.slice(0, 400)}`
       .replace(/\s+/g, " ")
       .trim();
 
-    const notFound = /(찾지 못했습니다|관련된 이메일을 찾지 못했습니다)/.test(
+    const notFound = /(찾지 못했습니다|관련된 이메일을 찾지 못했습니다|찾을 수 없습니다|없습니다\.?$)/.test(
       koreanOnly
     );
 
     const answerText = !emailContext || notFound
       ? (bestHit?.body
-          ? `관련 이메일을 확인했습니다. 핵심 내용은 다음과 같습니다: ${bestHit.body.replace(/\s+/g, " ")}`
+          ? `회의 일정으로 확인된 메일은 없었지만, 가장 가까운 일정 정보를 공유드려요: ${bestHit.body.replace(/\s+/g, " ")}`
           : "관련 답변을 찾지 못했습니다")
-      : `확인했습니다. ${koreanOnly}`;
+      : `네, ${koreanOnly}`;
 
     const formattedResponse = `답변:\n- ${answerText}\n제목:\n- ${bestHit?.subject || "정보 없음"}\n발신자:\n- ${bestHit?.sender || "정보 없음"}\n본문:\n- ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜:\n- ${bestHit?.date || "정보 없음"}`;
 
