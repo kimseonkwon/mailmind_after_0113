@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -190,9 +189,9 @@ export default function Home() {
   const [filterBody, setFilterBody] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
-  const [startDate, setStartDate] = useState<Date | undefined>(undefined);
-  const [endDate, setEndDate] = useState<Date | undefined>(undefined);
   const [filterOperator, setFilterOperator] = useState<"and" | "or">("and");
+  const [startParts, setStartParts] = useState({ year: "", month: "", day: "" });
+  const [endParts, setEndParts] = useState({ year: "", month: "", day: "" });
 
   const { data: stats, isLoading: statsLoading } = useQuery<Stats>({
     queryKey: ["/api/stats"],
@@ -255,9 +254,11 @@ export default function Home() {
     },
   });
 
+  const hasActiveFilters = () => [filterSender, filterSubject, filterBody, filterStartDate, filterEndDate].some(v => v.trim().length > 0);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    const hasFilters = [filterSender, filterSubject, filterBody, filterStartDate, filterEndDate].some(v => v.trim().length > 0);
+    const hasFilters = hasActiveFilters();
     if (!searchQuery.trim() && !hasFilters) {
       toast({
         title: "검색어를 입력해주세요",
@@ -298,11 +299,39 @@ export default function Home() {
     setFilterBody("");
     setFilterStartDate("");
     setFilterEndDate("");
-    setStartDate(undefined);
-    setEndDate(undefined);
+    setStartParts({ year: "", month: "", day: "" });
+    setEndParts({ year: "", month: "", day: "" });
     setFilterOperator("and");
     setSearchResults(null);
     setExpandedEmails(new Set());
+  };
+
+  const years = Array.from({ length: 16 }, (_, i) => (2020 + i).toString());
+  const months = Array.from({ length: 12 }, (_, i) => ({ value: (i + 1).toString().padStart(2, "0"), label: `${i + 1}월` }));
+  const getDays = (y: string, m: string) => {
+    if (!y || !m) return Array.from({ length: 31 }, (_, i) => (i + 1).toString().padStart(2, "0"));
+    const last = new Date(parseInt(y, 10), parseInt(m, 10), 0).getDate();
+    return Array.from({ length: last }, (_, i) => (i + 1).toString().padStart(2, "0"));
+  };
+
+  const updateDate = (
+    parts: { year: string; month: string; day: string },
+    setParts: React.Dispatch<React.SetStateAction<{ year: string; month: string; day: string }>>,
+    setFilterDate: React.Dispatch<React.SetStateAction<string>>,
+    field: "year" | "month" | "day",
+    value: string
+  ) => {
+    const next = { ...parts, [field]: value };
+    setParts(next);
+    if (next.year && next.month && next.day) {
+      const iso = `${next.year}-${next.month}-${next.day}`;
+      setFilterDate(iso);
+    }
+  };
+
+  const clearStartDate = () => {
+    setStartParts({ year: "", month: "", day: "" });
+    setFilterStartDate("");
   };
 
   return (
@@ -358,79 +387,135 @@ export default function Home() {
                   </Button>
                 )}
               </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  <Input
-                    placeholder="발신자"
-                    value={filterSender}
-                    onChange={(e) => setFilterSender(e.target.value)}
-                    data-testid="filter-sender"
-                  />
-                  <Input
-                    placeholder="제목"
-                    value={filterSubject}
-                    onChange={(e) => setFilterSubject(e.target.value)}
-                    data-testid="filter-subject"
-                  />
-                  <Input
-                    placeholder="본문 내용"
-                    value={filterBody}
-                    onChange={(e) => setFilterBody(e.target.value)}
-                    data-testid="filter-body"
-                  />
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className={cn("justify-start text-left font-normal", !filterStartDate && "text-muted-foreground")}
-                        data-testid="filter-start-date"
-                      >
-                        {filterStartDate ? filterStartDate : "시작일 선택"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={startDate}
-                        onSelect={(date) => {
-                          setStartDate(date || undefined);
-                          setFilterStartDate(date ? date.toISOString().slice(0, 10) : "");
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className={cn("justify-start text-left font-normal", !filterEndDate && "text-muted-foreground")}
-                        data-testid="filter-end-date"
-                      >
-                        {filterEndDate ? filterEndDate : "종료일 선택"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={endDate}
-                        onSelect={(date) => {
-                          setEndDate(date || undefined);
-                          setFilterEndDate(date ? date.toISOString().slice(0, 10) : "");
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  <Select value={filterOperator} onValueChange={(v: "and" | "or") => setFilterOperator(v)}>
-                    <SelectTrigger data-testid="filter-operator">
-                      <SelectValue placeholder="AND/OR" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="and">AND (모두 포함)</SelectItem>
-                      <SelectItem value="or">OR (하나라도 포함)</SelectItem>
-                    </SelectContent>
-                  </Select>
+              <div className="space-y-2">
+                <p className="text-sm font-semibold">상세검색</p>
+                <div className="rounded-md border p-3 space-y-3 bg-muted/30">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <Input
+                      placeholder="발신자"
+                      value={filterSender}
+                      onChange={(e) => setFilterSender(e.target.value)}
+                      data-testid="filter-sender"
+                    />
+                    <Input
+                      placeholder="제목"
+                      value={filterSubject}
+                      onChange={(e) => setFilterSubject(e.target.value)}
+                      data-testid="filter-subject"
+                    />
+                    <Input
+                      placeholder="본문 내용"
+                      value={filterBody}
+                      onChange={(e) => setFilterBody(e.target.value)}
+                      data-testid="filter-body"
+                    />
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn("justify-start text-left font-normal", !filterStartDate && "text-muted-foreground")}
+                          data-testid="filter-start-date"
+                        >
+                          {filterStartDate ? filterStartDate : "시작일 선택"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[280px]" align="start">
+                        <div className="space-y-2 text-sm">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="font-medium">시작일을 선택하세요</p>
+                            <Button variant="ghost" size="sm" onClick={clearStartDate} data-testid="reset-start-date">
+                              초기화
+                            </Button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <Select
+                              value={startParts.year}
+                              onValueChange={(v) => updateDate(startParts, setStartParts, setFilterStartDate, "year", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="년" /></SelectTrigger>
+                              <SelectContent>
+                                {years.map(y => <SelectItem key={y} value={y}>{y}년</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={startParts.month}
+                              onValueChange={(v) => updateDate(startParts, setStartParts, setFilterStartDate, "month", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="월" /></SelectTrigger>
+                              <SelectContent>
+                                {months.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={startParts.day}
+                              onValueChange={(v) => updateDate(startParts, setStartParts, setFilterStartDate, "day", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="일" /></SelectTrigger>
+                              <SelectContent>
+                                {getDays(startParts.year, startParts.month).map(d => <SelectItem key={d} value={d}>{`${parseInt(d,10)}일`}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn("justify-start text-left font-normal", !filterEndDate && "text-muted-foreground")}
+                          data-testid="filter-end-date"
+                        >
+                          {filterEndDate ? filterEndDate : "종료일 선택"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[280px]" align="start">
+                        <div className="space-y-2 text-sm">
+                          <p className="font-medium">종료일을 선택하세요</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <Select
+                              value={endParts.year}
+                              onValueChange={(v) => updateDate(endParts, setEndParts, setFilterEndDate, "year", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="년" /></SelectTrigger>
+                              <SelectContent>
+                                {years.map(y => <SelectItem key={y} value={y}>{y}년</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={endParts.month}
+                              onValueChange={(v) => updateDate(endParts, setEndParts, setFilterEndDate, "month", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="월" /></SelectTrigger>
+                              <SelectContent>
+                                {months.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={endParts.day}
+                              onValueChange={(v) => updateDate(endParts, setEndParts, setFilterEndDate, "day", v)}
+                            >
+                              <SelectTrigger><SelectValue placeholder="일" /></SelectTrigger>
+                              <SelectContent>
+                                {getDays(endParts.year, endParts.month).map(d => <SelectItem key={d} value={d}>{`${parseInt(d,10)}일`}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    <Select value={filterOperator} onValueChange={(v: "and" | "or") => setFilterOperator(v)}>
+                      <SelectTrigger data-testid="filter-operator">
+                        <SelectValue placeholder="AND/OR" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="and">AND (모두 포함)</SelectItem>
+                        <SelectItem value="or">OR (하나라도 포함)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
+              </div>
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <label htmlFor="topK" className="text-sm text-muted-foreground whitespace-nowrap">
@@ -450,7 +535,7 @@ export default function Home() {
                 <Button 
                   type="submit" 
                   className="flex-1"
-                  disabled={searchMutation.isPending || !searchQuery.trim()}
+                  disabled={searchMutation.isPending || (!searchQuery.trim() && !hasActiveFilters())}
                   data-testid="button-search"
                 >
                   {searchMutation.isPending ? (
