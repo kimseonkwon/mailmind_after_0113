@@ -5,6 +5,7 @@ import {
   type InsertEmail,
   type ImportLog,
   type InsertImportLog,
+  type SearchFilters,
   type SearchResult,
   type Stats,
   users,
@@ -25,7 +26,7 @@ import {
   type InsertRagChunk,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, or, ilike, desc, sql } from "drizzle-orm";
+import { eq, or, and, ilike, desc, gte, lte } from "drizzle-orm";
 import { cosineSimilarity } from "./ollama";
 
 
@@ -54,7 +55,7 @@ export interface IStorage {
   endDate: string | null;
 }>>;
 
-  searchEmails(query: string, topK: number): Promise<SearchResult[]>;
+  searchEmails(query: string, topK: number, filters?: SearchFilters): Promise<SearchResult[]>;
   
   logImport(log: InsertImportLog): Promise<ImportLog>;
   
@@ -291,27 +292,57 @@ async searchEmailsBm25(query: string, topK: number): Promise<SearchResult[]> {
     return inserted;
   }
 
-  async searchEmails(query: string, topK: number): Promise<SearchResult[]> {
-    const tokens = tokenize(query);
+  async searchEmails(query: string, topK: number, filters?: SearchFilters): Promise<SearchResult[]> {
+    const tokens = tokenize(`${query} ${(filters?.sender || "")} ${(filters?.subject || "")} ${(filters?.body || "")} ${(filters?.startDate || "")} ${(filters?.endDate || "")}`);
     if (tokens.length === 0) return [];
 
-    const searchPattern = `%${query}%`;
-    
+    const clauses = [] as any[];
+    const add = (condition: any | null) => { if (condition) clauses.push(condition); };
+
+    const normalizedOperator = (filters?.operator || "and").toLowerCase() === "or" ? "or" : "and";
+    const combine = (items: any[]) => {
+      if (items.length === 0) return undefined;
+      if (items.length === 1) return items[0];
+      return normalizedOperator === "or" ? or(...items) : and(...items);
+    };
+
+    const addPattern = (column: any, value?: string) => {
+      if (!value || value.trim().length === 0) return null;
+      return ilike(column, `%${value.trim()}%`);
+    };
+
+    // 기본 검색어(전체 필드 대상)
+    if (query.trim()) {
+      add(combine([
+        ilike(emails.subject, `%${query.trim()}%`),
+        ilike(emails.body, `%${query.trim()}%`),
+        ilike(emails.sender, `%${query.trim()}%`),
+        ilike(emails.date, `%${query.trim()}%`),
+      ]));
+    }
+
+    // 필터별 조건
+    add(addPattern(emails.sender, filters?.sender));
+    add(addPattern(emails.subject, filters?.subject));
+    add(addPattern(emails.body, filters?.body));
+
+    if (filters?.startDate && filters?.startDate.trim()) {
+      add(gte(emails.date, filters.startDate.trim()));
+    }
+    if (filters?.endDate && filters?.endDate.trim()) {
+      add(lte(emails.date, filters.endDate.trim()));
+    }
+
+    const whereClause = combine(clauses);
+
     const results = await db
       .select()
       .from(emails)
-      .where(
-        or(
-          ilike(emails.subject, searchPattern),
-          ilike(emails.body, searchPattern),
-          ilike(emails.sender, searchPattern),
-          ilike(emails.date, searchPattern)
-        )
-      )
-      .limit(100);
+      .where(whereClause ?? undefined)
+      .limit(200);
 
     const scored: SearchResult[] = results.map(email => {
-      const textToScore = `${email.subject} ${email.body}`;
+      const textToScore = `${email.subject} ${email.body} ${email.sender} ${email.date}`;
       const score = scoreText(textToScore, tokens);
       
       return {

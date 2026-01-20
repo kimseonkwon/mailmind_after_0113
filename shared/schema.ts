@@ -60,10 +60,35 @@ export const statsSchema = z.object({
 
 export type Stats = z.infer<typeof statsSchema>;
 
-export const chatRequestSchema = z.object({
-  message: z.string().min(1, "검색어를 입력해주세요"),
-  topK: z.number().min(1).max(50).default(10),
+export const searchFiltersSchema = z.object({
+  sender: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  operator: z.enum(["and", "or"]).default("and").optional(),
 });
+
+export type SearchFilters = z.infer<typeof searchFiltersSchema>;
+
+export const chatRequestSchema = z
+  .object({
+    message: z.string().optional().default(""),
+    topK: z.number().min(1).max(50).default(10),
+    filters: searchFiltersSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    const hasMessage = (val.message || "").trim().length > 0;
+    const f = val.filters;
+    const hasFilter = !!(
+      f &&
+      [f.sender, f.subject, f.body, f.date]
+        .some(v => (v || "").trim().length > 0)
+    );
+    if (!hasMessage && !hasFilter) {
+      ctx.addIssue({ code: "custom", message: "검색어 또는 필터를 입력하세요" });
+    }
+  });
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 

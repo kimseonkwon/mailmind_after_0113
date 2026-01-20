@@ -3,6 +3,9 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -22,6 +25,7 @@ import {
   Sparkles
 } from "lucide-react";
 import type { Stats, ChatResponse, SearchResult, EventExtractionResponse } from "@shared/schema";
+import { cn } from "@/lib/utils";
 
 function StatCard({ 
   title, 
@@ -181,6 +185,14 @@ export default function Home() {
   const [expandedEmails, setExpandedEmails] = useState<Set<number>>(new Set());
   const [searchResults, setSearchResults] = useState<ChatResponse | null>(null);
   const [extractingEmails, setExtractingEmails] = useState<Set<number>>(new Set());
+  const [filterSender, setFilterSender] = useState("");
+  const [filterSubject, setFilterSubject] = useState("");
+  const [filterBody, setFilterBody] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  const [startDate, setStartDate] = useState<Date | undefined>(undefined);
+  const [endDate, setEndDate] = useState<Date | undefined>(undefined);
+  const [filterOperator, setFilterOperator] = useState<"and" | "or">("and");
 
   const { data: stats, isLoading: statsLoading } = useQuery<Stats>({
     queryKey: ["/api/stats"],
@@ -226,7 +238,7 @@ export default function Home() {
   });
 
   const searchMutation = useMutation({
-    mutationFn: async (data: { message: string; topK: number }) => {
+    mutationFn: async (data: { message: string; topK: number; filters?: any }) => {
       const res = await apiRequest("POST", "/api/search", data);
       return res.json() as Promise<ChatResponse>;
     },
@@ -245,14 +257,26 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) {
+    const hasFilters = [filterSender, filterSubject, filterBody, filterStartDate, filterEndDate].some(v => v.trim().length > 0);
+    if (!searchQuery.trim() && !hasFilters) {
       toast({
         title: "검색어를 입력해주세요",
         variant: "destructive",
       });
       return;
     }
-    searchMutation.mutate({ message: searchQuery, topK });
+    searchMutation.mutate({ 
+      message: searchQuery, 
+      topK,
+      filters: {
+        sender: filterSender || undefined,
+        subject: filterSubject || undefined,
+        body: filterBody || undefined,
+        startDate: filterStartDate || undefined,
+        endDate: filterEndDate || undefined,
+        operator: filterOperator,
+      }
+    });
   };
 
   const toggleEmailExpand = (index: number) => {
@@ -269,6 +293,14 @@ export default function Home() {
 
   const clearSearch = () => {
     setSearchQuery("");
+    setFilterSender("");
+    setFilterSubject("");
+    setFilterBody("");
+    setFilterStartDate("");
+    setFilterEndDate("");
+    setStartDate(undefined);
+    setEndDate(undefined);
+    setFilterOperator("and");
     setSearchResults(null);
     setExpandedEmails(new Set());
   };
@@ -326,6 +358,79 @@ export default function Home() {
                   </Button>
                 )}
               </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <Input
+                    placeholder="발신자"
+                    value={filterSender}
+                    onChange={(e) => setFilterSender(e.target.value)}
+                    data-testid="filter-sender"
+                  />
+                  <Input
+                    placeholder="제목"
+                    value={filterSubject}
+                    onChange={(e) => setFilterSubject(e.target.value)}
+                    data-testid="filter-subject"
+                  />
+                  <Input
+                    placeholder="본문 내용"
+                    value={filterBody}
+                    onChange={(e) => setFilterBody(e.target.value)}
+                    data-testid="filter-body"
+                  />
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={cn("justify-start text-left font-normal", !filterStartDate && "text-muted-foreground")}
+                        data-testid="filter-start-date"
+                      >
+                        {filterStartDate ? filterStartDate : "시작일 선택"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={startDate}
+                        onSelect={(date) => {
+                          setStartDate(date || undefined);
+                          setFilterStartDate(date ? date.toISOString().slice(0, 10) : "");
+                        }}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={cn("justify-start text-left font-normal", !filterEndDate && "text-muted-foreground")}
+                        data-testid="filter-end-date"
+                      >
+                        {filterEndDate ? filterEndDate : "종료일 선택"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={endDate}
+                        onSelect={(date) => {
+                          setEndDate(date || undefined);
+                          setFilterEndDate(date ? date.toISOString().slice(0, 10) : "");
+                        }}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                  <Select value={filterOperator} onValueChange={(v: "and" | "or") => setFilterOperator(v)}>
+                    <SelectTrigger data-testid="filter-operator">
+                      <SelectValue placeholder="AND/OR" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="and">AND (모두 포함)</SelectItem>
+                      <SelectItem value="or">OR (하나라도 포함)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <label htmlFor="topK" className="text-sm text-muted-foreground whitespace-nowrap">

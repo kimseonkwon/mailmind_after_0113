@@ -16,6 +16,7 @@ import type {
   InsertMessage,
   CalendarEvent,
   InsertCalendarEvent,
+  SearchFilters,
 } from "@shared/schema";
 import type { IStorage, InsertEmailAttachment, EmailAttachment } from "./storage";
 import type { InsertRagChunk, RagChunk } from "@shared/schema";
@@ -363,19 +364,46 @@ export class LocalSQLiteStorage implements IStorage {
     this.db.prepare("UPDATE emails SET is_processed = 'true' WHERE id = ?").run(id);
   }
 
-  async searchEmails(query: string, topK: number): Promise<SearchResult[]> {
-    const tokens = tokenize(query);
+  async searchEmails(query: string, topK: number, filters?: SearchFilters): Promise<SearchResult[]> {
+    const combinedText = `${query} ${(filters?.sender || "")} ${(filters?.subject || "")} ${(filters?.body || "")} ${(filters?.startDate || "")} ${(filters?.endDate || "")}`;
+    const tokens = tokenize(combinedText);
     if (tokens.length === 0) return [];
 
-    const searchPattern = `%${query}%`;
-    const rows = this.db.prepare(`
-      SELECT * FROM emails 
-      WHERE subject LIKE ? OR body LIKE ? OR sender LIKE ? OR date LIKE ?
-      LIMIT 100
-    `).all(searchPattern, searchPattern, searchPattern, searchPattern) as Array<{ id: number; subject: string; sender: string; date: string; body: string }>;
+    const normalizedOperator = (filters?.operator || "and").toLowerCase() === "or" ? "OR" : "AND";
+    const clauses: string[] = [];
+    const params: string[] = [];
+
+    const addClause = (field: string, value?: string) => {
+      if (!value || value.trim().length === 0) return;
+      clauses.push(`${field} LIKE ?`);
+      params.push(`%${value.trim()}%`);
+    };
+
+    if (query.trim()) {
+      clauses.push(`(subject LIKE ? OR body LIKE ? OR sender LIKE ? OR date LIKE ?)`);
+      params.push(`%${query.trim()}%`, `%${query.trim()}%`, `%${query.trim()}%`, `%${query.trim()}%`);
+    }
+
+    addClause("sender", filters?.sender);
+    addClause("subject", filters?.subject);
+    addClause("body", filters?.body);
+    if (filters?.startDate && filters.startDate.trim()) {
+      clauses.push(`date >= ?`);
+      params.push(filters.startDate.trim());
+    }
+    if (filters?.endDate && filters.endDate.trim()) {
+      clauses.push(`date <= ?`);
+      params.push(filters.endDate.trim());
+    }
+
+    const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(` ${normalizedOperator} `)}` : "";
+
+    const rows = this.db.prepare(
+      `SELECT * FROM emails ${whereSql} LIMIT 200`
+    ).all(...params) as Array<{ id: number; subject: string; sender: string; date: string; body: string }>;
 
     const scored: SearchResult[] = rows.map(email => {
-      const textToScore = `${email.subject} ${email.body}`;
+      const textToScore = `${email.subject} ${email.body} ${email.sender} ${email.date}`;
       const score = scoreText(textToScore, tokens);
       
       return {

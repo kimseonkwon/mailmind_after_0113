@@ -281,15 +281,15 @@ export async function registerRoutes(
         return;
       }
 
-      const { message, topK } = validationResult.data;
-      const citations: SearchResult[] = await storage.searchEmails(message.trim(), topK);
+      const { message, topK, filters } = validationResult.data;
+      const citations: SearchResult[] = await storage.searchEmails(message.trim(), topK, filters);
 
       const topSubjects = citations
         .slice(0, 10)
         .map(c => `- ${c.subject} (점수=${c.score.toFixed(1)}, ID=${c.mailId})`)
         .join("\n");
 
-      const answer = `검색어: ${message}\n\nTop 결과:\n${topSubjects || "- (결과 없음)"}`;
+      const answer = `검색어: ${message || "(빈 검색어)"}\n\nTop 결과:\n${topSubjects || "- (결과 없음)"}`;
 
       const response: ChatResponse = {
         answer,
