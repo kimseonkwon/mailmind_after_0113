@@ -61,7 +61,30 @@ interface DraftReplyResponse {
   originalSubject: string;
 }
 
-function ChatMessage({ message, isUser }: { message: Message; isUser: boolean }) {
+function ChatMessage({ 
+  message, 
+  isUser,
+  isExpanded,
+  onToggle
+}: { 
+  message: Message; 
+  isUser: boolean;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const parseAssistant = (content: string) => {
+    const answerMatch = content.match(/답변:\s*-?\s*([\s\S]*?)(?:본문:|날짜:|$)/);
+    const bodyMatch = content.match(/본문:\s*-?\s*([\s\S]*?)(?:날짜:|$)/);
+    const dateMatch = content.match(/날짜:\s*-?\s*(.*)/);
+    return {
+      answer: (answerMatch?.[1] || content).trim(),
+      body: (bodyMatch?.[1] || "").trim(),
+      date: (dateMatch?.[1] || "").trim(),
+    };
+  };
+
+  const { answer, body, date } = isUser ? { answer: message.content, body: "", date: "" } : parseAssistant(message.content);
+
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
@@ -72,7 +95,20 @@ function ChatMessage({ message, isUser }: { message: Message; isUser: boolean })
       <div className={`max-w-[80%] rounded-lg p-3 ${
         isUser ? "bg-primary text-primary-foreground" : "bg-muted"
       }`}>
-        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        <p className="text-sm whitespace-pre-wrap">{answer}</p>
+        {!isUser && (
+          <div className="mt-2 space-y-2">
+            <Button size="sm" variant="outline" onClick={onToggle}>
+              {isExpanded ? "원문 접기" : "관련 메일 원문 보기"}
+            </Button>
+            {isExpanded && (
+              <div className="rounded-md bg-background text-foreground border p-3 space-y-1">
+                {body && <p className="text-xs whitespace-pre-wrap leading-relaxed">{body}</p>}
+                {date && <p className="text-xs text-muted-foreground">날짜: {date}</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -86,6 +122,7 @@ export default function ChatPage() {
   const [selectedEmailId, setSelectedEmailId] = useState<string>("");
   const [draftReply, setDraftReply] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
+    const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
 
   const { data: ollamaStatus } = useQuery<OllamaStatus>({
     queryKey: ["/api/ollama/status"],
@@ -308,7 +345,15 @@ export default function ChatPage() {
                       <ChatMessage 
                         key={msg.id} 
                         message={msg} 
-                        isUser={msg.role === "user"} 
+                        isUser={msg.role === "user"}
+                        isExpanded={expandedMessages.has(msg.id)}
+                        onToggle={() => {
+                          setExpandedMessages(prev => {
+                            const next = new Set(prev);
+                            if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                            return next;
+                          });
+                        }}
                       />
                     ))}
                     {chatMutation.isPending && (
