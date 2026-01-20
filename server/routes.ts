@@ -599,10 +599,12 @@ ${k.body.slice(0, 400)}`
     );
 
     const answerText = !emailContext || notFound
-      ? (bestHit?.body ? `관련 이메일 요약: ${bestHit.body.replace(/\s+/g, " ")}` : "관련 답변을 찾지 못했습니다")
-      : koreanOnly;
+      ? (bestHit?.body
+          ? `관련 이메일을 확인했습니다. 핵심 내용은 다음과 같습니다: ${bestHit.body.replace(/\s+/g, " ")}`
+          : "관련 답변을 찾지 못했습니다")
+      : `확인했습니다. ${koreanOnly}`;
 
-    const formattedResponse = `답변: ${answerText}\n본문: ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜: ${bestHit?.date || "정보 없음"}`;
+    const formattedResponse = `답변:\n- ${answerText}\n본문:\n- ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜:\n- ${bestHit?.date || "정보 없음"}`;
 
     await storage.addMessage({
       conversationId: convId,
