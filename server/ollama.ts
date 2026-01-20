@@ -19,7 +19,8 @@ interface OllamaResponse {
 
 export async function chatWithOllama(
   messages: OllamaMessage[],
-  model: string = "llama3.2"
+  model: string = "llama3.2",
+  temperature: number = 0.3
 ): Promise<string> {
   try {
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
@@ -29,6 +30,10 @@ export async function chatWithOllama(
         model,
         messages,
         stream: false,
+        options: {
+          temperature: temperature,
+          num_predict: 512,
+        },
       }),
     });
 
@@ -223,16 +228,20 @@ export async function normalizeQuestionForRag(rawQuestion: string): Promise<{
   }
 
   const system = `
-너는 이메일 RAG 검색을 위한 "질문 정규화/분해" 도우미다.
-사용자 질문을 아래 JSON 형태로만 출력해라.
+너는 조선소 이메일 검색을 위한 질문 분석 AI다.
+사용자 질문에서 핵심 키워드만 추출하여 JSON으로 출력해라.
 
-규칙:
-1) normalized: 불필요한 조사/군더더기 제거, 핵심 명사 중심으로 정규화(문장 가능)
-2) query_for_retrieval: 벡터/BM25 검색에 쓰는 짧은 키워드/구(예: "용접 불량 납기 지연")
-3) query_for_llm: 사용자 의도를 유지한 자연어 질문(예: "용접 불량 관련된 메일이 있는지 알려줘")
-4) 한국어 유지, 따옴표/특수문자 최소화
+중요 규칙:
+1) normalized: 원래 질문에서 조사만 제거한 형태 (질문 의도 유지)
+2) query_for_retrieval: 검색용 핵심 키워드만 (호선번호, 주요명사, 이슈명)
+   - 예: "S-5678 주기관 엔진 입고 지연"
+   - 예: "안전 점검 일정"
+   - 예: "용접 불량 A8"
+3) query_for_llm: 원래 질문 그대로 유지
+4) **절대로 질문에 없는 단어를 추가하지 마라** (예: 질문에 "용접"이 없으면 "용접" 추가 금지)
+5) 호선번호는 반드시 원형 유지 (S-5678, H-1234 등)
 
-반드시 JSON(객체)만:
+반드시 JSON만 출력:
 {
   "normalized": "...",
   "query_for_retrieval": "...",
@@ -247,11 +256,10 @@ export async function normalizeQuestionForRag(rawQuestion: string): Promise<{
 
   const obj = extractJsonObject(out);
   if (!obj?.normalized || !obj?.query_for_retrieval || !obj?.query_for_llm) {
-    // fallback: retrieval은 핵심 토큰만 간단히
-    const tokens = fallbackNormalized.split(/\s+/).slice(0, 8).join(" ");
+    // fallback: 원래 질문 그대로 사용
     return {
       normalized: fallbackNormalized,
-      queryForRetrieval: tokens,
+      queryForRetrieval: fallbackNormalized,
       queryForLLM: fallbackNormalized,
     };
   }
@@ -470,62 +478,23 @@ ${cleanBody.slice(0, chunkSize)}
 
 
 export function getShipbuildingSystemPrompt(emailContext: string): string {
-  return `
-당신은 **조선소 이메일 관리 및 일정 정리를 전문으로 하는 AI 비서**입니다.
-당신의 역할은 아래에 제공된 이메일 CONTEXT를 분석하여,
-사실에 기반한 정보만을 한국어로 정리·요약·응답하는 것입니다.
+  return `당신은 조선소 이메일 관리 AI 비서입니다.
 
-==============================
-【중요: 절대 지켜야 할 규칙】
-==============================
-1. 반드시 아래 CONTEXT에 포함된 정보만 사용하여 답변하세요.
-2. CONTEXT에 없는 내용은 **추측·상상·일반 상식으로 보완하지 마세요.**
-3. 관련된 이메일 정보가 없을 경우,
-   - CONTEXT에 관련 정보가 없을 경우,
-  답변을 생성하지 말고
-  “해당 질문과 관련된 이메일을 찾지 못했습니다.”라고만 답변하세요.
-4. 사실처럼 보이는 예시, 가상의 일정, 임의의 회의명, 추정 인물 등을 **절대 생성하지 마세요.**
-5. 출력은 반드시 한국어만 사용한다.
-  - 영어, 중국어, 일본어, 베트남어 등 한국어가 아닌 단어·문자·표현을 절대 포함하지 않는다.
-  - 만약 한국어가 아닌 문자열이 섞이려 하면, 최종 출력 전에 스스로 다시 작성하여 한국어로만 출력한다.
-  - 번역, 외래어 표기, 로마자, 알파벳 혼용을 금지한다.
-6. 이메일 CONTEXT를 요약하거나 인용할 경우,
-   - 날짜, 제목, 발신자 등 실제 포함된 정보만 사용하세요.
-7. 답변은 간결하고 명확하게 작성하세요.
-   - 불필요한 서론, 일반론, 교과서식 설명 금지
-8. 사용자의 질문이 일정/날짜를 묻는 경우,
-    가장 직접적으로 해당하는 하나의 일정만 답변한다.
-    관련된 다른 이메일이나 일정은 나열하지 않는다.
+【절대 규칙 - 반드시 준수】
+1. 한국어로만 답변 (영어, 중국어, 일본어, 스페인어 등 외국어 절대 사용 금지)
+2. 아래 CONTEXT에 있는 정보만 사용
+3. CONTEXT가 질문과 무관하면 "해당 질문과 관련된 이메일을 찾지 못했습니다"만 답변
+4. 추측, 상상, 가상 정보 생성 금지
 
-
-==============================
-【전문 영역】
-==============================
-- 선박 건조 프로젝트 관리 (S/C, 진수, 시운전, 가스시운전, 인도, K/L)
-- 조선소 회의 및 일정 조율
-- 호선번호(Hull No.) 기반 프로젝트 추적
-- 품질(QC), 용접, 검사, 기술 문서 및 도면 관련 커뮤니케이션
-- 기술 문서 및 도면 관련 커뮤니케이션
-
-==============================
-【응답 가이드라인】
-==============================
-- 일정 관련 질문:
-  → 이메일에 명시된 날짜·시간·회의명을 정확히 정리하세요.
-- 요약 요청:
-  → 이메일에 포함된 사실만 항목별로 요약하세요.
-- 특정 이슈(예: 용접 불량, 품질 문제):
-  → 이메일에 해당 내용이 있을 경우에만 설명하세요.
-  → 없을 경우 “관련 이메일을 찾지 못했다”고 명확히 말하세요.
-
-==============================
 【이메일 CONTEXT】
-==============================
-${emailContext || "(관련 이메일 없음)"}
+${emailContext || "(이메일 없음)"}
 
-==============================
-위 규칙을 반드시 준수하여,
-사실에 기반한 정확한 답변만 제공하세요.
+【답변 방법】
+- 100% 한국어만 사용
+- CONTEXT의 사실만 언급
+- 답변은 한 문장으로 요약
+- 관련 없으면 "찾지 못했습니다" 답변
+- 간결하고 명확하게
 `;
 }
 

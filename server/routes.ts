@@ -389,6 +389,16 @@ export async function registerRoutes(
     const retrievalQuery = queryForRetrieval || message;
     const llmQuestion = queryForLLM || message;
 
+    // 검색어 토큰 (길이 2 이상) 추출: 벡터 결과가 질문 토큰을 전혀 포함하지 않는 경우 필터링
+    const queryTokens = Array.from(
+      new Set(
+        (retrievalQuery || "")
+          .split(/[^0-9A-Za-z가-힣-]+/)
+          .map(t => t.trim())
+          .filter(t => t.length >= 2)
+      )
+    );
+
     /* =====================================================
        ⭐ 1.5 일정/언제 질문 → events DB 우선 처리 (핵심)
        ===================================================== */
@@ -425,6 +435,7 @@ export async function registerRoutes(
        2. RAG 검색 (벡터 우선)
        ===================================================== */
     let emailContext = "";
+    let bestHit: { body: string; date: string } | null = null;
     const vectorResults: Array<{ content: string; similarity: number }> = [];
     const bm25Results: Array<{
       subject: string;
@@ -434,7 +445,7 @@ export async function registerRoutes(
       score: number;
     }> = [];
 
-    const VECTOR_MIN_SIM = 0.35;
+    const VECTOR_MIN_SIM = 0.50;
     let maxSimilarity = 0;
 
     const ragChunkCount = await storage.getRagChunkCount();
@@ -445,10 +456,26 @@ export async function registerRoutes(
         for (const r of relevantChunks) {
           maxSimilarity = Math.max(maxSimilarity, r.similarity);
           if (r.similarity >= VECTOR_MIN_SIM) {
+            const content = r.chunk.content;
+            const hasTokenMatch =
+              queryTokens.length === 0 || queryTokens.some(t => content.includes(t));
+
+            // 질문 토큰이 전혀 없으면서 유사도도 낮으면 제외 (엔진→용접 오매칭 방지)
+            if (!hasTokenMatch && r.similarity < 0.75) continue;
+
             vectorResults.push({
-              content: r.chunk.content,
+              content,
               similarity: r.similarity,
             });
+
+            if (!bestHit) {
+              const dateMatch = content.match(/날짜:\s*([^\n]+)/);
+              const bodyPart = content.split("[원문 일부]")[1]?.trim() || "";
+              bestHit = {
+                body: (bodyPart || content).slice(0, 400),
+                date: dateMatch ? dateMatch[1].trim() : "",
+              };
+            }
           }
         }
       }
@@ -470,6 +497,13 @@ export async function registerRoutes(
           body: e.body,
           score: e.score,
         });
+
+        if (!bestHit) {
+          bestHit = {
+            body: (e.body || "").slice(0, 400),
+            date: e.date || "",
+          };
+        }
       }
     }
 
@@ -519,7 +553,9 @@ ${k.body.slice(0, 400)}`
       "[RAG DEBUG] vectorResults:",
       vectorResults.length,
       "maxSim:",
-      maxSimilarity
+      maxSimilarity,
+      "tokens:",
+      queryTokens
     );
     console.log("[RAG DEBUG] bm25Results:", bm25Results.length);
     console.log("[RAG DEBUG] emailContextLen:", emailContext?.length || 0);
@@ -553,17 +589,32 @@ ${k.body.slice(0, 400)}`
       { role: "user", content: llmQuestion },
     ]);
 
+    const koreanOnly = aiResponse
+      .replace(/[^가-힣0-9.,!?'"()\-:\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const notFound = /(찾지 못했습니다|관련된 이메일을 찾지 못했습니다)/.test(
+      koreanOnly
+    );
+
+    const answerText = !emailContext || notFound
+      ? (bestHit?.body ? `관련 이메일 요약: ${bestHit.body.replace(/\s+/g, " ")}` : "관련 답변을 찾지 못했습니다")
+      : koreanOnly;
+
+    const formattedResponse = `답변: ${answerText}\n본문: ${bestHit?.body?.replace(/\s+/g, " ") || "정보 없음"}\n날짜: ${bestHit?.date || "정보 없음"}`;
+
     await storage.addMessage({
       conversationId: convId,
       role: "assistant",
-      content: aiResponse,
+      content: formattedResponse,
     });
 
     /* =====================================================
        7. 응답
        ===================================================== */
     return res.json({
-      response: aiResponse,
+      response: formattedResponse,
       conversationId: convId,
     });
   } catch (error) {
