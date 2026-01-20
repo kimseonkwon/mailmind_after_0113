@@ -236,3 +236,14 @@ export const importWithProcessingResultSchema = z.object({
 });
 
 export type ImportWithProcessingResult = z.infer<typeof importWithProcessingResultSchema>;
+
+export const classificationStatsSchema = z.object({
+  total: z.number(),
+  task: z.number(),
+  meeting: z.number(),
+  approval: z.number(),
+  notice: z.number(),
+  unclassified: z.number(),
+});
+
+export type ClassificationStats = z.infer<typeof classificationStatsSchema>;

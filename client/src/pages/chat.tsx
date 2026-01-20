@@ -199,6 +199,16 @@ export default function ChatPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => setShowDraftDialog(true)}
+                disabled={!ollamaStatus?.connected || !emails?.length}
+                data-testid="button-open-draft"
+              >
+                <Reply className="h-4 w-4 mr-2" />
+                회신 초안 생성
+              </Button>
               <Badge variant={ollamaStatus?.connected ? "default" : "destructive"} className="gap-1">
                 {ollamaStatus?.connected ? (
                   <>
@@ -217,67 +227,8 @@ export default function ChatPage() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 space-y-4">
-        {classificationStats && classificationStats.total > 0 && (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">이메일 분류 현황</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                  <CheckSquare className="h-4 w-4 text-blue-500" />
-                  <div>
-                    <p className="text-xs text-muted-foreground">업무</p>
-                    <p className="font-semibold" data-testid="stat-task">{classificationStats.task}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                  <Users className="h-4 w-4 text-green-500" />
-                  <div>
-                    <p className="text-xs text-muted-foreground">회의</p>
-                    <p className="font-semibold" data-testid="stat-meeting">{classificationStats.meeting}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                  <FileText className="h-4 w-4 text-orange-500" />
-                  <div>
-                    <p className="text-xs text-muted-foreground">결재</p>
-                    <p className="font-semibold" data-testid="stat-approval">{classificationStats.approval}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                  <Bell className="h-4 w-4 text-purple-500" />
-                  <div>
-                    <p className="text-xs text-muted-foreground">공지</p>
-                    <p className="font-semibold" data-testid="stat-notice">{classificationStats.notice}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                  <AlertCircle className="h-4 w-4 text-gray-500" />
-                  <div>
-                    <p className="text-xs text-muted-foreground">미분류</p>
-                    <p className="font-semibold" data-testid="stat-unclassified">{classificationStats.unclassified}</p>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-3 flex justify-end">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setShowDraftDialog(true)}
-                  disabled={!ollamaStatus?.connected || !emails?.length}
-                  data-testid="button-open-draft"
-                >
-                  <Reply className="h-4 w-4 mr-2" />
-                  회신 초안 생성
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <div className="grid lg:grid-cols-4 gap-6 h-[calc(100vh-300px)]">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+        <div className="grid lg:grid-cols-4 gap-6 h-[calc(100vh-180px)]">
           <Card className="lg:col-span-1 flex flex-col">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between gap-2">

@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button";
 import Home from "@/pages/home";
 import ImportPage from "@/pages/import";
 import ChatPage from "@/pages/chat";
+import EmailsPage from "@/pages/emails";
 import CalendarPage from "@/pages/calendar";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
-import { Search, FolderUp, MessageCircle, Calendar, Settings } from "lucide-react";
+import { Search, FolderUp, MessageCircle, Mail, Calendar, Settings } from "lucide-react";
 
 function Navigation() {
   const [location] = useLocation();
@@ -28,14 +29,14 @@ function Navigation() {
             <Search className="h-5 w-5" />
           </Button>
         </Link>
-        <Link href="/import">
+        <Link href="/emails">
           <Button 
-            variant={location === "/import" ? "secondary" : "ghost"} 
+            variant={location === "/emails" ? "secondary" : "ghost"} 
             size="icon"
             className="h-12 w-12"
-            data-testid="nav-import"
+            data-testid="nav-emails"
           >
-            <FolderUp className="h-5 w-5" />
+            <Mail className="h-5 w-5" />
           </Button>
         </Link>
         <Link href="/chat">
@@ -56,6 +57,16 @@ function Navigation() {
             data-testid="nav-calendar"
           >
             <Calendar className="h-5 w-5" />
+          </Button>
+        </Link>
+        <Link href="/import">
+          <Button 
+            variant={location === "/import" ? "secondary" : "ghost"} 
+            size="icon"
+            className="h-12 w-12"
+            data-testid="nav-import"
+          >
+            <FolderUp className="h-5 w-5" />
           </Button>
         </Link>
         <Link href="/settings">
@@ -79,6 +90,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/import" component={ImportPage} />
       <Route path="/chat" component={ChatPage} />
+      <Route path="/emails" component={EmailsPage} />
       <Route path="/calendar" component={CalendarPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
