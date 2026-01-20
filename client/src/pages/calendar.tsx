@@ -111,7 +111,7 @@ function EventCard({ event, onClick }: { event: CalendarEvent; onClick: () => vo
 export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('calendar');
 
   const { data: events, isLoading } = useQuery<CalendarEvent[]>({
     queryKey: ["/api/events"],
@@ -202,8 +202,8 @@ export default function CalendarPage() {
 
         {viewMode === 'calendar' && (
           <Card className="overflow-hidden">
-            <CardContent className="p-4 md:p-6 flex flex-col md:flex-row gap-6">
-              <div className="mx-auto md:mx-0 w-80">
+            <CardContent className="p-4 md:p-6">
+              <div className="w-full">
                 <Calendar
                   onChange={(value) => {
                     if (value instanceof Date) setSelectedDate(value);
@@ -213,41 +213,38 @@ export default function CalendarPage() {
                   }}
                   value={selectedDate}
                   formatDay={(locale, date) => date.getDate().toString()}
+                  className="w-full border-0"
                   tileContent={({ date, view }) => {
                     if (view !== "month") return null;
                     const key = date.toISOString().split("T")[0];
                     const dayEvents = eventsByDate.get(key);
                     if (!dayEvents?.length) return null;
 
-                    const sample = dayEvents.slice(0, 3);
                     return (
-                      <div className="mt-1 flex justify-center gap-0.5">
-                        {sample.map((ev) => (
-                          <span
-                            key={ev.id}
-                            className={`inline-block h-1.5 w-1.5 rounded-full ${getEventCategory(ev.title).dotColor}`}
-                          />
-                        ))}
+                      <div className="mt-1 space-y-0.5 w-full px-0.5">
+                        {dayEvents.map((ev, idx) => {
+                          const category = getEventCategory(ev.title);
+                          const truncatedTitle = ev.title.length > 12 ? ev.title.substring(0, 12) + '...' : ev.title;
+                          return (
+                            <div
+                              key={ev.id}
+                              className={`text-[10px] px-1 py-0.5 rounded text-white truncate ${category.colorClass}`}
+                              style={{ lineHeight: '1.2' }}
+                              title={ev.title}
+                            >
+                              {truncatedTitle}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   }}
+                  tileClassName={({ date }) => {
+                    const key = date.toISOString().split("T")[0];
+                    const dayEvents = eventsByDate.get(key);
+                    return dayEvents?.length ? 'min-h-[120px] align-top' : 'min-h-[80px]';
+                  }}
                 />
-              </div>
-
-              <div className="flex-1 flex flex-col justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold mb-1">
-                    {selectedDate.toLocaleDateString("ko-KR", {
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                      weekday: "short",
-                    })}
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    {eventsForSelectedDate.length}개 일정
-                  </p>
-                </div>
               </div>
             </CardContent>
           </Card>
