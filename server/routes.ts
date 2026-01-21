@@ -517,6 +517,21 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/conversations/:id", async (req: Request, res: Response) => {
+    try {
+      const conversationId = parseInt(req.params.id);
+      if (isNaN(conversationId)) {
+        res.status(400).json({ error: "잘못된 대화 ID입니다." });
+        return;
+      }
+      await storage.deleteConversation(conversationId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Delete conversation error:", error);
+      res.status(500).json({ error: "대화를 삭제하는 중 오류가 발생했습니다." });
+    }
+  });
+
   app.post("/api/ai/chat", async (req: Request, res: Response) => {
   try {
     const validationResult = aiChatRequestSchema.safeParse(req.body);

@@ -24,7 +24,8 @@ import {
   Bell,
   Reply,
   Copy,
-  X
+  X,
+  Trash2
 } from "lucide-react";
 import {
   Dialog,
@@ -32,6 +33,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -65,12 +82,14 @@ function ChatMessage({
   message, 
   isUser,
   isExpanded,
-  onToggle
+  onToggle,
+  onCopy
 }: { 
   message: Message; 
   isUser: boolean;
   isExpanded: boolean;
   onToggle: () => void;
+  onCopy: () => void;
 }) {
   const parseAssistant = (content: string) => {
     const answerMatch = content.match(/답변:\s*-?\s*([\s\S]*?)(?=제목:|발신자:|본문:|날짜:|$)/);
@@ -101,7 +120,17 @@ function ChatMessage({
       <div className={`max-w-[80%] rounded-lg p-3 ${
         isUser ? "bg-primary text-primary-foreground" : "bg-muted"
       }`}>
-        <p className="text-sm whitespace-pre-wrap">{answer}</p>
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm whitespace-pre-wrap flex-1">{answer}</p>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6 shrink-0"
+            onClick={onCopy}
+          >
+            <Copy className="h-3 w-3" />
+          </Button>
+        </div>
         {!isUser && (
           <div className="mt-2 space-y-2">
             <Button size="sm" variant="outline" onClick={onToggle}>
@@ -130,7 +159,10 @@ export default function ChatPage() {
   const [selectedEmailId, setSelectedEmailId] = useState<string>("");
   const [draftReply, setDraftReply] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
-    const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
+  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
+  const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState<number | null>(null);
 
   const { data: ollamaStatus } = useQuery<OllamaStatus>({
     queryKey: ["/api/ollama/status"],
@@ -183,15 +215,45 @@ export default function ChatPage() {
       if (!currentConversationId) {
         setCurrentConversationId(data.conversationId);
       }
+      setOptimisticMessage(null);
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
       queryClient.invalidateQueries({ queryKey: ["/api/conversations", data.conversationId, "messages"] });
     },
     onError: (error: Error) => {
+      setOptimisticMessage(null);
       toast({
         title: "오류",
         description: error.message || "AI 응답을 가져오는 중 오류가 발생했습니다.",
         variant: "destructive",
       });
+    },
+  });
+
+  const deleteConversationMutation = useMutation({
+    mutationFn: async (conversationId: number) => {
+      const response = await apiRequest("DELETE", `/api/conversations/${conversationId}`);
+      return response.json();
+    },
+    onSuccess: () => {
+      if (conversationToDelete === currentConversationId) {
+        setCurrentConversationId(null);
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      toast({
+        title: "삭제 완료",
+        description: "대화가 삭제되었습니다.",
+      });
+      setDeleteDialogOpen(false);
+      setConversationToDelete(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "오류",
+        description: error.message || "대화 삭제 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+      setDeleteDialogOpen(false);
+      setConversationToDelete(null);
     },
   });
 
@@ -206,10 +268,28 @@ export default function ChatPage() {
     if (!input.trim() || chatMutation.isPending) return;
     
     const message = input.trim();
+    setOptimisticMessage(message);
     setInput("");
     chatMutation.mutate(message);
   };
 
+  const handleCopyMessage = (content: string) => {
+    navigator.clipboard.writeText(content);
+    toast({
+      title: "복사됨",
+      description: "메시지가 클립보드에 복사되었습니다.",
+    });
+  };
+  const handleDeleteConversation = (conversationId: number) => {
+    setConversationToDelete(conversationId);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (conversationToDelete) {
+      deleteConversationMutation.mutate(conversationToDelete);
+    }
+  };
   const startNewConversation = () => {
     setCurrentConversationId(null);
     queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
@@ -303,15 +383,27 @@ export default function ChatPage() {
                 ) : (
                   <div className="space-y-1">
                     {conversations?.map(conv => (
-                      <Button
-                        key={conv.id}
-                        variant={currentConversationId === conv.id ? "secondary" : "ghost"}
-                        className="w-full justify-start text-left h-auto py-2 px-3"
-                        onClick={() => setCurrentConversationId(conv.id)}
-                        data-testid={`conversation-${conv.id}`}
-                      >
-                        <span className="truncate text-sm">{conv.title}</span>
-                      </Button>
+                      <ContextMenu key={conv.id}>
+                        <ContextMenuTrigger>
+                          <Button
+                            variant={currentConversationId === conv.id ? "secondary" : "ghost"}
+                            className="w-full justify-start text-left h-auto py-2 px-3"
+                            onClick={() => setCurrentConversationId(conv.id)}
+                            data-testid={`conversation-${conv.id}`}
+                          >
+                            <span className="truncate text-sm">{conv.title}</span>
+                          </Button>
+                        </ContextMenuTrigger>
+                        <ContextMenuContent>
+                          <ContextMenuItem
+                            onClick={() => handleDeleteConversation(conv.id)}
+                            className="text-destructive focus:text-destructive cursor-pointer"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            삭제
+                          </ContextMenuItem>
+                        </ContextMenuContent>
+                      </ContextMenu>
                     ))}
                   </div>
                 )}
@@ -362,8 +454,19 @@ export default function ChatPage() {
                             return next;
                           });
                         }}
+                        onCopy={() => handleCopyMessage(msg.content)}
                       />
                     ))}
+                    {optimisticMessage && (
+                      <div className="flex gap-3 flex-row-reverse">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary text-primary-foreground">
+                          <User className="h-4 w-4" />
+                        </div>
+                        <div className="max-w-[80%] rounded-lg p-3 bg-primary text-primary-foreground">
+                          <p className="text-sm whitespace-pre-wrap">{optimisticMessage}</p>
+                        </div>
+                      </div>
+                    )}
                     {chatMutation.isPending && (
                       <div className="flex gap-3">
                         <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-muted">
@@ -466,6 +569,26 @@ export default function ChatPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>대화 삭제</AlertDialogTitle>
+            <AlertDialogDescription>
+              이 대화를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              삭제
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

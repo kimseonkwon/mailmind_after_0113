@@ -485,6 +485,11 @@ export class LocalSQLiteStorage implements IStorage {
     }));
   }
 
+  async deleteConversation(conversationId: number): Promise<void> {
+    this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
+    this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
+  }
+
   async addCalendarEvent(event: InsertCalendarEvent): Promise<CalendarEvent> {
     const result = this.db.prepare(`
       INSERT INTO calendar_events (email_id, title, start_date, end_date, location, description, ship_number)

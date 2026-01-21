@@ -62,6 +62,7 @@ export interface IStorage {
   createConversation(conv: InsertConversation): Promise<Conversation>;
   getConversation(id: number): Promise<Conversation | undefined>;
   getConversations(): Promise<Conversation[]>;
+  deleteConversation(conversationId: number): Promise<void>;
   
   addMessage(msg: InsertMessage): Promise<Message>;
   getMessages(conversationId: number): Promise<Message[]>;
