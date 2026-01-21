@@ -561,15 +561,12 @@ export async function registerRoutes(
     });
 
     /* =====================================================
-       1. 질문 정규화
+       1. 질문은 원본 그대로 사용 (정규화 비활성화)
        ===================================================== */
-    const { queryForRetrieval, queryForLLM } =
-      await normalizeQuestionForRag(message);
+    const retrievalQuery = message;  // 원본 그대로
+    const llmQuestion = message;
 
-    const retrievalQuery = queryForRetrieval || message;
-    const llmQuestion = queryForLLM || message;
-
-    // 검색어 토큰 (길이 2 이상) 추출: 벡터 결과가 질문 토큰을 전혀 포함하지 않는 경우 필터링
+    // 검색어 토큰 (길이 2 이상) 추출
     const queryTokens = Array.from(
       new Set(
         (retrievalQuery || "")
@@ -612,140 +609,133 @@ export async function registerRoutes(
     }
 
     /* =====================================================
-       2. RAG 검색 (벡터 우선)
+       2. 하이브리드 RAG 검색 (벡터 + BM25 + Reranking)
        ===================================================== */
     let emailContext = "";
     let bestHit: { body: string; date: string; subject?: string; sender?: string } | null = null;
-    const vectorResults: Array<{ content: string; similarity: number }> = [];
-    const bm25Results: Array<{
-      subject: string;
-      sender: string;
-      date: string;
-      body: string;
-      score: number;
-    }> = [];
+    
+    // 후보 청크 저장
+    interface RankedChunk {
+      content: string;
+      vectorScore: number;
+      bm25Score: number;
+      keywordMatches: number;
+      finalScore: number;
+      emailId?: number;
+    }
+    const candidates: RankedChunk[] = [];
+    
+    const VECTOR_MIN_SIM = 0.50; // 벡터 최소 유사도 (낮춰서 더 많이 수집)
+    const MIN_KEYWORD_MATCHES = 1; // 최소 키워드 매칭 개수
+    const MAX_CHUNKS = 3;
 
-    const VECTOR_MIN_SIM = 0.50;
-    let maxSimilarity = 0;
-
+    // Step 1: 벡터 검색 (항상 실행)
+    const vectorChunks = new Map<string, { content: string; similarity: number; emailId: number }>();
     const ragChunkCount = await storage.getRagChunkCount();
-    let firstAboveThreshold: { content: string; similarity: number } | null = null;
     if (ragChunkCount > 0) {
       const queryEmbedding = await generateEmbedding(retrievalQuery);
       if (queryEmbedding) {
-        const relevantChunks = await storage.searchRagChunks(queryEmbedding, 3);
+        const relevantChunks = await storage.searchRagChunks(queryEmbedding, 10);
         for (const r of relevantChunks) {
-          maxSimilarity = Math.max(maxSimilarity, r.similarity);
           if (r.similarity >= VECTOR_MIN_SIM) {
-            const content = r.chunk.content;
-            const hasTokenMatch =
-              queryTokens.length === 0 || queryTokens.some(t => content.includes(t));
-
-            // 질문 토큰이 전혀 없으면서 유사도도 낮으면 제외 (엔진→용접 오매칭 방지)
-            if (!hasTokenMatch && r.similarity < 0.75) continue;
-
-            vectorResults.push({
-              content,
-              similarity: r.similarity,
-            });
-
-            if (!bestHit) {
-              const dateMatch = content.match(/날짜:\s*([^\n]+)/);
-              const subjectMatch = content.match(/제목:\s*([^\n]+)/);
-              const senderMatch = content.match(/발신자:\s*([^\n]+)/);
-              const bodyPart = content.split("[원문 일부]")[1]?.trim() || "";
-              bestHit = {
-                body: (bodyPart || content).slice(0, 400),
-                date: dateMatch ? dateMatch[1].trim() : "",
-                subject: subjectMatch ? subjectMatch[1].trim() : "",
-                sender: senderMatch ? senderMatch[1].trim() : "",
-              };
-            }
-          } else if (!firstAboveThreshold && r.similarity >= VECTOR_MIN_SIM) {
-            firstAboveThreshold = {
+            const key = r.chunk.content.slice(0, 100);
+            vectorChunks.set(key, {
               content: r.chunk.content,
               similarity: r.similarity,
-            };
+              emailId: r.chunk.emailId
+            });
           }
         }
       }
     }
 
-    // 토큰 불일치로 모두 걸러졌지만 유사도는 기준을 넘는 경우 첫 결과라도 사용
-    if (vectorResults.length === 0 && firstAboveThreshold) {
-      vectorResults.push(firstAboveThreshold);
-      const content = firstAboveThreshold.content;
-      const dateMatch = content.match(/날짜:\s*([^\n]+)/);
-      const subjectMatch = content.match(/제목:\s*([^\n]+)/);
-      const senderMatch = content.match(/발신자:\s*([^\n]+)/);
-      const bodyPart = content.split("[원문 일부]")[1]?.trim() || "";
-      bestHit = {
-        body: (bodyPart || content).slice(0, 400),
-        date: dateMatch ? dateMatch[1].trim() : "",
-        subject: subjectMatch ? subjectMatch[1].trim() : "",
-        sender: senderMatch ? senderMatch[1].trim() : "",
-      };
+    // Step 2: BM25 검색 (항상 실행)
+    const bm25Chunks = new Map<string, { content: string; score: number; emailId: number }>();
+    const bm25Emails = await storage.searchEmailsBm25(retrievalQuery, 10);
+    for (const email of bm25Emails) {
+      // 이메일을 청크 형태로 변환
+      const chunkContent = `제목: ${email.subject}
+발신자: ${email.sender}
+날짜: ${email.date}
+
+[원문 일부]
+${email.body.slice(0, 800)}`;
+      const key = chunkContent.slice(0, 100);
+      bm25Chunks.set(key, {
+        content: chunkContent,
+        score: email.score,
+        emailId: parseInt(email.mailId) || 0
+      });
     }
 
-    /* =====================================================
-       3. 벡터 결과 없거나 약하면 → BM25 검색
-       ===================================================== */
-    const needBm25 =
-      vectorResults.length === 0 || maxSimilarity < VECTOR_MIN_SIM;
-
-    if (needBm25) {
-      const bm25Emails = await storage.searchEmailsBm25(retrievalQuery, 6);
-      for (const e of bm25Emails) {
-        bm25Results.push({
-          subject: e.subject,
-          sender: e.sender || "",
-          date: e.date || "",
-          body: e.body,
-          score: e.score,
-        });
-
-        if (!bestHit) {
-          bestHit = {
-            body: (e.body || "").slice(0, 400),
-            date: e.date || "",
-            subject: e.subject || "",
-            sender: e.sender || "",
-          };
+    // Step 3: 후보 통합 및 Reranking
+    const allKeys = new Set([...vectorChunks.keys(), ...bm25Chunks.keys()]);
+    
+    for (const key of allKeys) {
+      const vectorData = vectorChunks.get(key);
+      const bm25Data = bm25Chunks.get(key);
+      
+      const content = vectorData?.content || bm25Data?.content || "";
+      const vectorScore = vectorData?.similarity || 0;
+      const bm25Score = bm25Data?.score || 0;
+      
+      // 키워드 매칭 점수 계산
+      let keywordMatches = 0;
+      const contentLower = content.toLowerCase();
+      for (const token of queryTokens) {
+        if (contentLower.includes(token.toLowerCase())) {
+          keywordMatches++;
         }
       }
+      
+      // 최종 점수 계산 (RRF 기반 + 키워드 부스트)
+      const vectorRank = vectorScore > 0 ? 1 / (vectorScore + 0.01) : 100;
+      const bm25Rank = bm25Score > 0 ? 1 / (bm25Score + 0.01) : 100;
+      const keywordBoost = keywordMatches * 2.0; // 키워드 매칭 중요도 높임
+      
+      const finalScore = (
+        (vectorScore * 0.3) + 
+        (bm25Score * 0.3) + 
+        keywordBoost
+      );
+      
+      candidates.push({
+        content,
+        vectorScore,
+        bm25Score,
+        keywordMatches,
+        finalScore,
+        emailId: vectorData?.emailId || bm25Data?.emailId
+      });
     }
 
-    /* =====================================================
-       4. Context 병합 (최대 3개만)
-       ===================================================== */
-    const seen = new Set<string>();
+    // Step 4: 점수순 정렬 및 필터링
+    candidates.sort((a, b) => b.finalScore - a.finalScore);
+    
+    // 키워드가 최소 1개 이상 매칭된 것만 선택
+    const topCandidates = candidates
+      .filter(c => c.keywordMatches >= MIN_KEYWORD_MATCHES || c.vectorScore >= 0.70)
+      .slice(0, MAX_CHUNKS);
+
+    // Step 5: 컨텍스트 생성
     const contextItems: string[] = [];
-
-    for (const v of vectorResults) {
-      if (contextItems.length >= 3) break;
-      const key = v.content.slice(0, 120);
-      if (!seen.has(key)) {
-        seen.add(key);
-        contextItems.push(
-          `[벡터 검색 · 유사도 ${(v.similarity * 100).toFixed(0)}%]
-${v.content}`
-        );
-      }
-    }
-
-    for (const k of bm25Results) {
-      if (contextItems.length >= 3) break;
-      const key = k.subject + k.sender;
-      if (!seen.has(key)) {
-        seen.add(key);
-        contextItems.push(
-          `[키워드 검색 · BM25 점수 ${k.score.toFixed(2)}]
-제목: ${k.subject}
-발신자: ${k.sender}
-날짜: ${k.date}
-
-${k.body.slice(0, 400)}`
-        );
+    for (const candidate of topCandidates) {
+      contextItems.push(
+        `[Hybrid Score: ${candidate.finalScore.toFixed(2)} | Vector: ${(candidate.vectorScore * 100).toFixed(0)}% | BM25: ${candidate.bm25Score.toFixed(2)} | Keywords: ${candidate.keywordMatches}/${queryTokens.length}]
+${candidate.content}`
+      );
+      
+      if (!bestHit) {
+        const dateMatch = candidate.content.match(/날짜:\s*([^\n]+)/);
+        const subjectMatch = candidate.content.match(/제목:\s*([^\n]+)/);
+        const senderMatch = candidate.content.match(/발신자:\s*([^\n]+)/);
+        const bodyPart = candidate.content.split("[원문 일부]")[1]?.trim() || "";
+        bestHit = {
+          body: (bodyPart || candidate.content).slice(0, 400),
+          date: dateMatch ? dateMatch[1].trim() : "",
+          subject: subjectMatch ? subjectMatch[1].trim() : "",
+          sender: senderMatch ? senderMatch[1].trim() : "",
+        };
       }
     }
 
@@ -757,15 +747,18 @@ ${k.body.slice(0, 400)}`
        🧪 RAG DEBUG 로그
        ===================================================== */
     console.log("[RAG DEBUG] retrievalQuery:", retrievalQuery);
-    console.log(
-      "[RAG DEBUG] vectorResults:",
-      vectorResults.length,
-      "maxSim:",
-      maxSimilarity,
-      "tokens:",
-      queryTokens
-    );
-    console.log("[RAG DEBUG] bm25Results:", bm25Results.length);
+    console.log("[RAG DEBUG] queryTokens:", queryTokens);
+    console.log("[RAG DEBUG] vectorCandidates:", vectorChunks.size);
+    console.log("[RAG DEBUG] bm25Candidates:", bm25Chunks.size);
+    console.log("[RAG DEBUG] totalCandidates:", candidates.length);
+    console.log("[RAG DEBUG] topResults:", topCandidates.length);
+    if (topCandidates.length > 0) {
+      console.log("[RAG DEBUG] Top 3 scores:");
+      topCandidates.slice(0, 3).forEach((c, i) => {
+        console.log(`  ${i + 1}. Final:${c.finalScore.toFixed(2)} V:${(c.vectorScore * 100).toFixed(0)}% B:${c.bm25Score.toFixed(2)} KW:${c.keywordMatches}/${queryTokens.length}`);
+        console.log(`     ${c.content.slice(0, 80)}...`);
+      });
+    }
     console.log("[RAG DEBUG] emailContextLen:", emailContext?.length || 0);
 
     /* =====================================================

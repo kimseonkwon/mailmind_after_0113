@@ -148,13 +148,43 @@ export class LocalSQLiteStorage implements IStorage {
   query: string,
   topK: number
 ): Promise<SearchResult[]> {
-  // SQLite 모드에서는 기존 키워드 검색 재사용
-  const results = await this.searchEmails(query, topK);
+  // 쿼리를 토큰화하여 키워드 추출
+  const tokens = tokenize(query);
+  if (tokens.length === 0) return [];
 
-  // BM25 점수 흉내 (기존 score 유지)
-  return results
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, topK);
+  // 각 토큰을 OR 조건으로 검색
+  const conditions = tokens.map(() => 
+    `(subject LIKE ? OR body LIKE ? OR sender LIKE ?)`
+  ).join(' OR ');
+  
+  const params: string[] = [];
+  tokens.forEach(token => {
+    params.push(`%${token}%`, `%${token}%`, `%${token}%`);
+  });
+
+  const rows = this.db.prepare(
+    `SELECT * FROM emails WHERE ${conditions} LIMIT 200`
+  ).all(...params) as Array<{ id: number; subject: string; sender: string; date: string; body: string }>;
+
+  // BM25 스타일 점수 계산
+  const scored: SearchResult[] = rows.map(email => {
+    const textToScore = `${email.subject} ${email.body} ${email.sender}`;
+    const score = scoreText(textToScore, tokens);
+    
+    return {
+      mailId: String(email.id),
+      subject: email.subject || "(제목 없음)",
+      score,
+      sender: email.sender || null,
+      date: email.date || null,
+      body: email.body || "",
+      attachments: [],
+    };
+  }).filter(r => r.score > 0);
+
+  // 점수 순으로 정렬하여 반환
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
 }
 
   async getUser(id: string): Promise<User | undefined> {
