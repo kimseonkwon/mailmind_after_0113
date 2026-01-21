@@ -395,27 +395,15 @@ export default function Home() {
           <CardContent className="p-6">
             <form onSubmit={handleSearch} className="space-y-4">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                 <Input
-                  type="search"
+                  type="text"
                   placeholder="검색어를 입력하세요..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 pr-10 h-12 text-lg"
+                  className="pl-10 pr-4 h-12 text-lg"
                   data-testid="input-search"
                 />
-                {searchQuery && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                    onClick={clearSearch}
-                    data-testid="button-clear-search"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                )}
               </div>
               <div className="space-y-2">
                 <p className="text-sm font-semibold">상세검색</p>

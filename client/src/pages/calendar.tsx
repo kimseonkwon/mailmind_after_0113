@@ -112,27 +112,16 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('calendar');
-  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
 
   const { data: events, isLoading } = useQuery<CalendarEvent[]>({
     queryKey: ["/api/events"],
   });
 
-  const filteredEvents = useMemo(() => {
-    if (!events) return [];
-    if (selectedCategories.size === 0) return events;
-    
-    return events.filter(ev => {
-      const category = getEventCategory(ev.title);
-      return selectedCategories.has(category.keyword);
-    });
-  }, [events, selectedCategories]);
-
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
-    if (!filteredEvents) return map;
+    if (!events) return map;
 
-    for (const ev of filteredEvents) {
+    for (const ev of events) {
       if (!ev.startDate) continue;
 
       const dateOnly = new Date(ev.startDate)
@@ -144,7 +133,7 @@ export default function CalendarPage() {
 }
 
     return map;
-  }, [filteredEvents]);
+  }, [events]);
 
   const eventsForSelectedDate = eventsByDate.get(
     selectedDate.toISOString().split("T")[0]
@@ -199,44 +188,14 @@ export default function CalendarPage() {
       <main className="max-w-7xl mx-auto px-4 py-8 space-y-6">
         <Card>
           <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold">일정 범례</h3>
-              {selectedCategories.size > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedCategories(new Set())}
-                  className="text-xs"
-                >
-                  전체 보기
-                </Button>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {EVENT_CATEGORIES.map((cat) => {
-                const isSelected = selectedCategories.has(cat.keyword);
-                const isAnySelected = selectedCategories.size > 0;
-                return (
-                  <Button
-                    key={cat.keyword}
-                    variant={isSelected || !isAnySelected ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => {
-                      const newSelected = new Set(selectedCategories);
-                      if (newSelected.has(cat.keyword)) {
-                        newSelected.delete(cat.keyword);
-                      } else {
-                        newSelected.add(cat.keyword);
-                      }
-                      setSelectedCategories(newSelected);
-                    }}
-                    className={`flex items-center gap-1.5 text-xs ${isSelected || !isAnySelected ? cat.colorClass + ' text-white hover:opacity-90' : ''}`}
-                  >
-                    <div className={`h-3 w-3 rounded-full ${isSelected || !isAnySelected ? 'bg-white' : cat.dotColor}`} />
-                    <span>{cat.label}</span>
-                  </Button>
-                );
-              })}
+            <h3 className="font-semibold mb-3">일정 범례</h3>
+            <div className="flex flex-wrap gap-3">
+              {EVENT_CATEGORIES.map((cat) => (
+                <div key={cat.keyword} className="flex items-center gap-1.5 text-sm">
+                  <div className={`h-3 w-3 rounded-full ${cat.dotColor}`} />
+                  <span>{cat.label}</span>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -317,7 +276,7 @@ export default function CalendarPage() {
           </Card>
         ) : viewMode === 'list' ? (
           <div className="space-y-4" data-testid="events-list">
-            {filteredEvents.map((event) => (
+            {events.map((event) => (
               <EventCard
                 key={event.id}
                 event={event}
