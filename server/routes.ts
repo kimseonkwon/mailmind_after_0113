@@ -2,6 +2,8 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
+import * as path from "path";
+import * as fs from "fs";
 import { 
   chatRequestSchema, 
   aiChatRequestSchema,
@@ -17,10 +19,12 @@ import { generateEmbedding, normalizeQuestionForRag } from "./ollama";
 
 import { chatWithOllama, extractEventsFromEmail, checkOllamaConnection, classifyEmail, generateEmailChunks, getShipbuildingSystemPrompt } from "./ollama";
 import { parsePSTFromBuffer } from "./pst-parser";
+import { parseEMLFromBuffer } from "./eml-parser";
+import AdmZip from "adm-zip";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }
+  limits: { fileSize: 1024 * 1024 * 1024 }
 });
 
 function parseEmailsFromJson(content: string): Array<{
@@ -122,8 +126,18 @@ export async function registerRoutes(
   });
 
   app.post("/api/import", upload.single("file"), async (req: Request, res: Response) => {
+    console.log("\n========================================");
+    console.log("📥 파일 업로드 요청 받음");
+    console.log("========================================");
+    
     try {
       const file = req.file;
+      console.log("파일 정보:", file ? {
+        originalname: file.originalname,
+        size: file.size,
+        mimetype: file.mimetype
+      } : "파일 없음");
+      
       let emailsToImport: Array<{
         subject: string;
         sender: string;
@@ -131,19 +145,28 @@ export async function registerRoutes(
         body: string;
         importance?: string;
         label?: string;
+        attachments?: any;
       }> = [];
       let filename = "sample_data";
 
       if (file) {
         filename = file.originalname;
         const ext = filename.toLowerCase().split(".").pop();
+        const mimeType = file.mimetype.toLowerCase();
+        console.log(`파일 확장자: ${ext}, MIME 타입: ${mimeType}`);
 
         if (ext === "json") {
+          console.log("JSON 파일 파싱 시작...");
           const content = file.buffer.toString("utf-8");
           emailsToImport = parseEmailsFromJson(content);
+          console.log(`JSON에서 ${emailsToImport.length}개 이메일 파싱됨`);
         } else if (ext === "pst") {
-          const parseResult = parsePSTFromBuffer(file.buffer, filename);
+          console.log("PST 파일 파싱 시작...");
+          const parseResult = await parsePSTFromBuffer(file.buffer, filename);
+          console.log(`PST 파싱 결과: ${parseResult.emails.length}개 이메일, ${parseResult.errors.length}개 오류`);
+          
           if (parseResult.errors.length > 0 && parseResult.emails.length === 0) {
+            console.error("PST 파싱 완전 실패:", parseResult.errors);
             res.status(400).json({
               ok: false,
               inserted: 0,
@@ -152,18 +175,89 @@ export async function registerRoutes(
             return;
           }
           emailsToImport = parseResult.emails;
+        } else if (ext === "eml") {
+          console.log("EML 파일 파싱 시작...");
+          const parseResult = await parseEMLFromBuffer(file.buffer, filename);
+          console.log(`EML 파싱 결과: ${parseResult.emails.length}개 이메일, ${parseResult.errors.length}개 오류`);
+          
+          if (parseResult.errors.length > 0 && parseResult.emails.length === 0) {
+            console.error("EML 파싱 실패:", parseResult.errors);
+            res.status(400).json({
+              ok: false,
+              inserted: 0,
+              message: `EML 파일 파싱 오류: ${parseResult.errors.join(", ")}`,
+            });
+            return;
+          }
+          emailsToImport = parseResult.emails;
+        } else if (ext === "zip" || mimeType.includes("zip")) {
+          console.log("ZIP 파일 압축 해제 시작...");
+          try {
+            const zip = new AdmZip(file.buffer);
+            const zipEntries = zip.getEntries();
+            const emlFiles = zipEntries.filter(entry => 
+              !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.eml')
+            );
+            
+            console.log(`ZIP 파일에서 ${emlFiles.length}개 EML 파일 발견`);
+            
+            const allEmails: typeof emailsToImport = [];
+            const errors: string[] = [];
+            
+            for (const entry of emlFiles) {
+              try {
+                const buffer = entry.getData();
+                const parseResult = await parseEMLFromBuffer(buffer, entry.entryName);
+                
+                if (parseResult.emails.length > 0) {
+                  allEmails.push(...parseResult.emails);
+                }
+                if (parseResult.errors.length > 0) {
+                  errors.push(...parseResult.errors);
+                }
+              } catch (err) {
+                const errMsg = err instanceof Error ? err.message : "Unknown error";
+                errors.push(`${entry.entryName} 파싱 오류: ${errMsg}`);
+              }
+            }
+            
+            console.log(`ZIP 처리 완료: ${allEmails.length}개 이메일 파싱, ${errors.length}개 오류`);
+            
+            if (allEmails.length === 0) {
+              res.status(400).json({
+                ok: false,
+                inserted: 0,
+                message: `ZIP 파일에서 이메일을 찾을 수 없습니다. ${errors.length > 0 ? '오류: ' + errors.slice(0, 3).join(', ') : ''}`,
+              });
+              return;
+            }
+            
+            emailsToImport = allEmails;
+            if (errors.length > 0) {
+              console.warn(`경고: ${errors.length}개 파일 처리 중 오류 발생`);
+            }
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : "Unknown error";
+            console.error("ZIP 파일 처리 오류:", errMsg);
+            res.status(400).json({
+              ok: false,
+              inserted: 0,
+              message: `ZIP 파일 처리 오류: ${errMsg}`,
+            });
+            return;
+          }
         } else if (ext === "mbox") {
           res.status(400).json({
             ok: false,
             inserted: 0,
-            message: "MBOX 파일은 현재 지원되지 않습니다. PST 또는 JSON 형식을 사용해 주세요.",
+            message: "MBOX 파일은 현재 지원되지 않습니다. PST, EML, ZIP 또는 JSON 형식을 사용해 주세요.",
           });
           return;
         } else {
           res.status(400).json({
             ok: false,
             inserted: 0,
-            message: "지원되지 않는 파일 형식입니다. JSON 파일을 사용해 주세요.",
+            message: "지원되지 않는 파일 형식입니다. PST, EML, ZIP 또는 JSON 파일을 사용해 주세요.",
           });
           return;
         }
@@ -173,6 +267,7 @@ export async function registerRoutes(
       }
 
       if (emailsToImport.length === 0) {
+        console.log("⚠️ 파일에서 이메일을 찾을 수 없음");
         res.status(400).json({
           ok: false,
           inserted: 0,
@@ -181,8 +276,10 @@ export async function registerRoutes(
         return;
       }
 
+      console.log(`\n📧 ${emailsToImport.length}개 이메일 DB에 저장 시작...`);
       const insertedEmails = await storage.insertEmailsAndGetIds(emailsToImport);
       const insertedCount = insertedEmails.length;
+      console.log(`✅ ${insertedCount}개 이메일 저장 완료`);
       
       await storage.logImport({
         filename,
@@ -194,8 +291,10 @@ export async function registerRoutes(
       let embeddedCount = 0;
 
       const ollamaConnected = await checkOllamaConnection();
+      console.log(`\n🤖 Ollama 연결 상태: ${ollamaConnected ? "연결됨" : "연결 안됨"}`);
       
       if (ollamaConnected) {
+        console.log("\n📊 이메일 분류 및 처리 시작...");
         for (const email of insertedEmails) {
           try {
             const classification = await classifyEmail(email.subject, email.body, email.sender);
@@ -223,12 +322,24 @@ export async function registerRoutes(
               }
             }
 
+            let bodyWithPdf = email.body;
+            const emailFromImport = emailsToImport.find(e => e.subject === email.subject && e.sender === email.sender && e.date === email.date);
+            if (emailFromImport?.attachments) {
+              const pdfTexts = emailFromImport.attachments
+                .filter(att => att.pdfText)
+                .map(att => `\n\n[첨부파일: ${att.originalName}]\n${att.pdfText}`)
+                .join('');
+              if (pdfTexts) {
+                bodyWithPdf += pdfTexts;
+              }
+            }
+
             const emailChunks = await generateEmailChunks(
               email.id, 
               email.subject, 
               email.sender, 
               email.date, 
-              email.body
+              bodyWithPdf
             );
             
             if (emailChunks.length > 0) {
@@ -247,6 +358,7 @@ export async function registerRoutes(
             console.error(`Error processing email ${email.id}:`, err);
           }
         }
+        console.log(`\n✅ 처리 완료: ${classifiedCount}개 분류, ${eventsExtractedCount}개 일정, ${embeddedCount}개 임베딩`);
       }
 
       const result = {
@@ -260,9 +372,12 @@ export async function registerRoutes(
           : `${insertedCount}개의 이메일을 가져왔습니다. AI 서버 미연결로 자동 처리가 건너뛰어졌습니다.`,
       };
 
+      console.log("\n✨ 업로드 완료:", result);
+      console.log("========================================\n");
       res.json(result);
     } catch (error) {
-      console.error("Import error:", error);
+      console.error("\n❌ Import error:", error);
+      console.error("========================================\n");
       res.status(500).json({
         ok: false,
         inserted: 0,
@@ -919,10 +1034,38 @@ ${email.body}
         allEmails = allEmails.filter(e => e.classification === classification);
       }
       
-      res.json(allEmails);
+      // 각 이메일의 첨부파일 정보 추가
+      const emailsWithAttachments = await Promise.all(
+        allEmails.map(async (email) => {
+          const attachments = await storage.getEmailAttachments(email.id);
+          return { ...email, attachments };
+        })
+      );
+      
+      res.json(emailsWithAttachments);
     } catch (error) {
       console.error("Get emails error:", error);
       res.status(500).json({ error: "이메일 목록을 가져오는 중 오류가 발생했습니다." });
+    }
+  });
+
+  app.delete("/api/emails/all", async (_req: Request, res: Response) => {
+    try {
+      console.log("🗑️ 모든 데이터 삭제 시작...");
+      const result = await storage.clearAllData();
+      console.log(`✅ 삭제 완료: 이메일 ${result.emails}개, 일정 ${result.events}개, RAG 청크 ${result.chunks}개`);
+      
+      res.json({
+        ok: true,
+        deleted: result,
+        message: `총 ${result.emails}개 이메일, ${result.events}개 일정, ${result.chunks}개 RAG 데이터가 삭제되었습니다.`
+      });
+    } catch (error) {
+      console.error("❌ 데이터 삭제 오류:", error);
+      res.status(500).json({ 
+        ok: false,
+        error: "데이터 삭제 중 오류가 발생했습니다." 
+      });
     }
   });
 
@@ -1067,6 +1210,29 @@ ${email.body}
     } catch (error) {
       console.error("Process unprocessed error:", error);
       res.status(500).json({ error: "처리 중 오류가 발생했습니다." });
+    }
+  });
+
+  app.get("/api/attachments/*", (req: Request, res: Response) => {
+    try {
+      const relativePath = req.path.replace('/api/attachments/', '');
+      const attachmentsDir = path.join(process.cwd(), 'data', 'attachments');
+      const filePath = path.join(attachmentsDir, relativePath);
+      
+      if (!filePath.startsWith(attachmentsDir)) {
+        res.status(403).json({ error: "접근이 거부되었습니다." });
+        return;
+      }
+      
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ error: "파일을 찾을 수 없습니다." });
+        return;
+      }
+      
+      res.sendFile(filePath);
+    } catch (error) {
+      console.error("Attachment download error:", error);
+      res.status(500).json({ error: "파일 다운로드 중 오류가 발생했습니다." });
     }
   });
 

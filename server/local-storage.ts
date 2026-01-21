@@ -540,6 +540,22 @@ export class LocalSQLiteStorage implements IStorage {
     return countBefore;
   }
 
+  async clearAllData(): Promise<{ emails: number; events: number; chunks: number }> {
+    const emailsCount = (this.db.prepare('SELECT COUNT(*) as count FROM emails').get() as { count: number }).count;
+    const eventsCount = (this.db.prepare('SELECT COUNT(*) as count FROM calendar_events').get() as { count: number }).count;
+    const chunksCount = (this.db.prepare('SELECT COUNT(*) as count FROM rag_chunks').get() as { count: number }).count;
+    
+    this.db.prepare('DELETE FROM emails').run();
+    this.db.prepare('DELETE FROM calendar_events').run();
+    this.db.prepare('DELETE FROM rag_chunks').run();
+    
+    return {
+      emails: emailsCount,
+      events: eventsCount,
+      chunks: chunksCount
+    };
+  }
+
   async getAppSetting(key: string): Promise<string | null> {
     const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value ?? null;

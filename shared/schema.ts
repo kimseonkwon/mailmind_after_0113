@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, serial, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -14,6 +14,7 @@ export const emails = pgTable("emails", {
   classification: text("classification"),
   classificationConfidence: text("classification_confidence"),
   isProcessed: text("is_processed").default("false"),
+  attachments: jsonb("attachments"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -47,7 +48,13 @@ export const searchResultSchema = z.object({
   sender: z.string().nullable(),
   date: z.string().nullable(),
   body: z.string(),
-  attachments: z.array(z.string()).optional(),
+  attachments: z.array(z.object({
+    originalName: z.string(),
+    storedName: z.string(),
+    relPath: z.string(),
+    size: z.number(),
+    mime: z.string().optional(),
+  })).optional(),
 });
 
 export type SearchResult = z.infer<typeof searchResultSchema>;

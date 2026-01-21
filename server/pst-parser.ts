@@ -5,6 +5,7 @@ import * as os from "os";
 import * as iconv from "iconv-lite";
 import { htmlToText } from "html-to-text";
 import { execSync, spawnSync } from "child_process";
+import pdfParse from "pdf-parse";
 
 export interface ParsedEmail {
   subject: string;
@@ -22,6 +23,7 @@ export interface ParsedAttachment {
   relPath: string;
   size: number;
   mime?: string;
+  pdfText?: string;
 }
 
 export interface PSTParseResult {
@@ -316,12 +318,23 @@ function extractSender(email: PSTMessage): string {
   return "";
 }
 
-function extractAttachments(
+async function extractPdfText(filePath: string): Promise<string> {
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    const data = await pdfParse(dataBuffer);
+    return data.text || "";
+  } catch (err) {
+    console.error(`PDF parsing error for ${filePath}:`, err);
+    return "";
+  }
+}
+
+async function extractAttachments(
   email: PSTMessage,
   opts: PSTParseOptions,
   errors: string[],
   emailKey: string
-): ParsedAttachment[] {
+): Promise<ParsedAttachment[]> {
   if (!opts.saveAttachments || !opts.attachmentsDir) return [];
 
   try {
@@ -360,12 +373,24 @@ function extractAttachments(
 
       writeNodeInputStreamToFile(stream, absPath);
 
+      let pdfText: string | undefined;
+      if (originalName.toLowerCase().endsWith('.pdf')) {
+        try {
+          const dataBuffer = fs.readFileSync(absPath);
+          const data = await pdfParse(dataBuffer);
+          pdfText = data.text || undefined;
+        } catch (pdfErr) {
+          console.error(`PDF parsing error for ${originalName}:`, pdfErr);
+        }
+      }
+
       out.push({
         originalName: originalNameRaw || originalName,
         storedName,
         relPath,
         size: size || (fs.existsSync(absPath) ? fs.statSync(absPath).size : 0),
         mime,
+        pdfText,
       });
     } catch (err) {
       errors.push(`Error extracting attachment (emailKey=${emailKey}, idx=${i}): ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -375,22 +400,35 @@ function extractAttachments(
   return out;
 }
 
-function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[], opts: PSTParseOptions): void {
+async function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[], opts: PSTParseOptions): Promise<void> {
   try {
     if (folder.hasSubfolders) {
       const subFolders = folder.getSubFolders();
       for (const subFolder of subFolders) {
-        processFolder(subFolder, emails, errors, opts);
+        try {
+          await processFolder(subFolder, emails, errors, opts);
+        } catch (subErr) {
+          console.error(`Error processing subfolder ${subFolder.displayName}:`, subErr);
+          errors.push(`하위 폴더 오류 (${subFolder.displayName}): ${subErr instanceof Error ? subErr.message : 'Unknown'}`);
+        }
       }
     }
 
     if (folder.contentCount > 0) {
-      let email: PSTMessage | null = folder.getNextChild();
+      let email: PSTMessage | null = null;
+      try {
+        email = folder.getNextChild();
+      } catch (err) {
+        console.error(`Error getting first child from folder ${folder.displayName}:`, err);
+        errors.push(`폴더 읽기 오류 (${folder.displayName}): ${err instanceof Error ? err.message : 'Unknown'}`);
+        return;
+      }
+      
       while (email !== null) {
         try {
           const emailKey = `${emails.length + 1}_${Date.now()}`;
 
-          const attachments = extractAttachments(email, opts, errors, emailKey);
+          const attachments = await extractAttachments(email, opts, errors, emailKey);
           const parsed: ParsedEmail = {
             subject: decodeText(email.subject) || "(제목 없음)",
             sender: extractSender(email),
@@ -402,14 +440,22 @@ function processFolder(folder: PSTFolder, emails: ParsedEmail[], errors: string[
           };
           emails.push(parsed);
         } catch (err) {
-          errors.push(`Error parsing email: ${err instanceof Error ? err.message : "Unknown error"}`);
+          console.error(`Error parsing individual email:`, err);
+          errors.push(`이메일 파싱 오류: ${err instanceof Error ? err.message : "Unknown error"}`);
         }
-        email = folder.getNextChild();
+        
+        try {
+          email = folder.getNextChild();
+        } catch (err) {
+          console.error(`Error getting next child:`, err);
+          break;
+        }
       }
     }
   } catch (err) {
+    console.error(`Error processing folder ${folder.displayName}:`, err);
     errors.push(
-      `Error processing folder ${folder.displayName}: ${err instanceof Error ? err.message : "Unknown error"}`
+      `폴더 처리 오류 ${folder.displayName}: ${err instanceof Error ? err.message : "Unknown error"}`
     );
   }
 }
@@ -429,7 +475,11 @@ function parseWithReadpst(filePath: string, opts: PSTParseOptions = {}): PSTPars
     });
     
     if (result.error) {
-      throw new Error(`readpst 실행 오류: ${result.error.message}`);
+      if (result.error.message.includes('ENOENT')) {
+        console.log('readpst 명령어를 찾을 수 없습니다. (Windows에서는 기본적으로 설치되지 않음)');
+      } else {
+        throw new Error(`readpst 실행 오류: ${result.error.message}`);
+      }
     }
     
     if (result.status !== 0 && result.stderr) {
@@ -588,35 +638,45 @@ function decodeRfc2047(text: string): string {
   });
 }
 
-export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTParseResult {
+export async function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): Promise<PSTParseResult> {
   const emails: ParsedEmail[] = [];
   const errors: string[] = [];
-  let usedFallback = false;
 
   try {
     const pstFile = new PSTFile(filePath);
     const rootFolder = pstFile.getRootFolder();
-    processFolder(rootFolder, emails, errors, opts);
+    await processFolder(rootFolder, emails, errors, opts);
+    
+    if (emails.length > 0) {
+      console.log(`PST 파일에서 ${emails.length}개 이메일 파싱 성공`);
+      return {
+        emails,
+        totalCount: emails.length,
+        errorCount: errors.length,
+        errors,
+      };
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : "Unknown error";
-    console.log(`pst-extractor 실패, readpst로 재시도: ${errMsg}`);
+    console.log(`pst-extractor 오류: ${errMsg}`);
     
-    const fallbackResult = parseWithReadpst(filePath, opts);
-    usedFallback = true;
-    
-    if (fallbackResult.emails.length > 0) {
-      return fallbackResult;
+    if (emails.length > 0) {
+      console.log(`오류가 발생했지만 ${emails.length}개 이메일은 파싱됨`);
+      return {
+        emails,
+        totalCount: emails.length,
+        errorCount: errors.length + 1,
+        errors: [...errors, `PST 파일 일부 파싱 오류: ${errMsg}`],
+      };
     }
+    
+    errors.push(`PST 파일 파싱 실패: ${errMsg}`);
     
     if (errMsg.includes("findBtreeItem") || errMsg.includes("Unable to find")) {
-      errors.push(`PST 파일 형식 오류: Unicode PST 형식이지만 파싱에 실패했습니다. (${errMsg})`);
+      errors.push(`\n\ud574결 방법:\n1. PST 파일을 Outlook에서 열어 다른 형식으로 내보내기 (예: EML 파일들)\n2. JSON 형식으로 변환하여 업로드`);
     } else if (errMsg.includes("password") || errMsg.includes("encrypted")) {
       errors.push(`PST 파일이 암호로 보호되어 있습니다. 암호를 해제한 후 다시 시도해주세요.`);
-    } else {
-      errors.push(`PST 파일 열기 실패: ${errMsg}`);
     }
-    
-    errors.push(...fallbackResult.errors);
   }
 
   return {
@@ -627,13 +687,13 @@ export function parsePSTFile(filePath: string, opts: PSTParseOptions = {}): PSTP
   };
 }
 
-export function parsePSTFromBuffer(buffer: Buffer, filename: string, opts: PSTParseOptions = {}): PSTParseResult {
+export async function parsePSTFromBuffer(buffer: Buffer, filename: string, opts: PSTParseOptions = {}): Promise<PSTParseResult> {
   const tempDir = os.tmpdir();
   const tempPath = path.join(tempDir, `pst_${Date.now()}_${filename}`);
 
   try {
     fs.writeFileSync(tempPath, buffer);
-    const result = parsePSTFile(tempPath, opts);
+    const result = await parsePSTFile(tempPath, opts);
     return result;
   } finally {
     try {

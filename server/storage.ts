@@ -71,6 +71,8 @@ export interface IStorage {
   getCalendarEventsByEmailId(emailId: number): Promise<CalendarEvent[]>;
   clearCalendarEvents(): Promise<number>;
   
+  clearAllData(): Promise<{ emails: number; events: number; chunks: number }>;
+  
   getAppSetting(key: string): Promise<string | null>;
   setAppSetting(key: string, value: string): Promise<void>;
 

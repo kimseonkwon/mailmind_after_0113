@@ -20,9 +20,20 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
-  AlertCircle
+  AlertCircle,
+  Trash2
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { Stats } from "@shared/schema";
 
 interface ExtendedImportResult {
@@ -125,7 +136,7 @@ function UploadDropzone({
           <input
             id="file-upload"
             type="file"
-            accept=".pst,.json,.mbox"
+            accept=".pst,.json,.eml,.zip"
             className="hidden"
             onChange={handleFileChange}
             disabled={isUploading}
@@ -145,10 +156,12 @@ function UploadDropzone({
                 파일을 드래그하거나 클릭하세요
               </p>
               <p className="text-sm text-muted-foreground mb-4">
-                PST, JSON 파일 지원 (최대 100MB)
+                PST, EML, ZIP(EML폴더), JSON 파일 지원 (최대 1GB)
               </p>
               <div className="flex gap-2">
                 <Badge variant="outline">PST</Badge>
+                <Badge variant="outline">EML</Badge>
+                <Badge variant="outline">ZIP</Badge>
                 <Badge variant="outline">JSON</Badge>
               </div>
             </>
@@ -215,6 +228,7 @@ export default function ImportPage() {
   const { toast } = useToast();
   const [uploadProgress, setUploadProgress] = useState(0);
   const [lastResult, setLastResult] = useState<ExtendedImportResult | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const { data: stats, isLoading: statsLoading } = useQuery<Stats>({
     queryKey: ["/api/stats"],
@@ -227,6 +241,30 @@ export default function ImportPage() {
 
   const { data: classificationStats } = useQuery<{ total: number; unclassified: number }>({
     queryKey: ["/api/emails/classification-stats"],
+  });
+
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", "/api/emails/all");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "데이터 삭제 완료",
+        description: data.message,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/events"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/emails/classification-stats"] });
+      setShowDeleteConfirm(false);
+    },
+    onError: (error) => {
+      toast({
+        title: "삭제 실패",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
   });
 
   const reprocessMutation = useMutation({
@@ -296,12 +334,20 @@ export default function ImportPage() {
       setUploadProgress(0);
     },
     onError: (error) => {
+      const errorMsg = error.message;
+      const isPstError = errorMsg.includes("PST") || errorMsg.includes("findBtreeItem");
+      
       toast({
-        title: "가져오기 실패",
-        description: error.message,
+        title: isPstError ? "PST 파일 파싱 실패" : "가져오기 실패",
+        description: errorMsg,
         variant: "destructive",
+        duration: isPstError ? 10000 : 5000,
       });
       setUploadProgress(0);
+      
+      if (isPstError) {
+        console.error("PST 파싱 오류 상세:", errorMsg);
+      }
     },
   });
 
@@ -338,6 +384,17 @@ export default function ImportPage() {
                   <Database className="h-3 w-3" />
                   {stats.emailsCount.toLocaleString()}개 저장됨
                 </Badge>
+              )}
+              {stats && stats.emailsCount > 0 && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="gap-1"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  전체 삭제
+                </Button>
               )}
             </div>
           </div>
@@ -453,6 +510,36 @@ export default function ImportPage() {
           </CardContent>
         </Card>
       </main>
+
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>모든 데이터를 삭제하시겠습니까?</AlertDialogTitle>
+            <AlertDialogDescription>
+              이 작업은 되돌릴 수 없습니다. 모든 이메일, 일정, RAG 데이터가 영구적으로 삭제됩니다.
+              {stats && (
+                <div className="mt-3 p-3 bg-destructive/10 rounded-md">
+                  <p className="text-sm font-medium text-destructive">삭제될 데이터:</p>
+                  <ul className="text-sm mt-2 space-y-1">
+                    <li>• 이메일: {stats.emailsCount}개</li>
+                    <li>• 일정 및 RAG 데이터</li>
+                  </ul>
+                </div>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteAllMutation.mutate()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteAllMutation.isPending}
+            >
+              {deleteAllMutation.isPending ? "삭제 중..." : "삭제"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

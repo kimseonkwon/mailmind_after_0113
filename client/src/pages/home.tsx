@@ -117,6 +117,36 @@ function EmailResultCard({
                 <p className="text-sm whitespace-pre-wrap">{result.body}</p>
               </div>
             )}
+            {expanded && result.attachments && result.attachments.length > 0 && (
+              <div className="mt-4 border-t pt-4">
+                <p className="text-sm font-semibold mb-2">첨부파일 ({result.attachments.length})</p>
+                <div className="space-y-2">
+                  {result.attachments.map((att, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-2 border rounded bg-background">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className="text-sm truncate">{att.originalName}</span>
+                        <span className="text-xs text-muted-foreground">
+                          ({(att.size / 1024).toFixed(1)} KB)
+                        </span>
+                      </div>
+                      {att.originalName.toLowerCase().endsWith('.pdf') && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(`/api/attachments/${att.relPath}`, '_blank');
+                          }}
+                        >
+                          보기
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {expanded && (
               <div className="mt-4 flex gap-2">
                 <Button
