@@ -206,63 +206,35 @@ export default function EmailsPage() {
                     </div>
 
                     {selectedEmailId === email.id && (
-                      <div className="border border-t-0 border-primary rounded-b-lg bg-muted/20 p-4 space-y-4">
-                        <ScrollArea className="h-96 border rounded-lg p-4 bg-background">
-                          <p className="text-sm whitespace-pre-wrap">{email.body || "본문 없음"}</p>
-                        </ScrollArea>
-                        {email.attachments && email.attachments.length > 0 && (
-                          <div className="border-t pt-4">
-                            <p className="text-sm font-semibold mb-2">첨부파일 ({email.attachments.length})</p>
-                            <div className="space-y-2">
-                              {email.attachments.map((att, idx) => (
-                                <div key={idx} className="flex items-center justify-between p-2 border rounded bg-background">
-                                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                                    <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                                    <span className="text-sm truncate">{att.originalName}</span>
-                                    <span className="text-xs text-muted-foreground">
-                                      ({(att.size / 1024).toFixed(1)} KB)
-                                    </span>
-                                  </div>
-                                  <div className="flex gap-1">
-                                    {att.originalName.toLowerCase().endsWith('.pdf') && (
-                                      <>
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          onClick={() => setPreviewFile({ name: att.originalName, path: att.relPath })}
-                                          title="미리보기"
-                                        >
-                                          <Eye className="h-4 w-4" />
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          onClick={() => window.open(`/api/attachments/${att.relPath}`, '_blank')}
-                                          title="새 탭에서 열기"
-                                        >
-                                          <ExternalLink className="h-4 w-4" />
-                                        </Button>
-                                      </>
-                                    )}
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      onClick={() => {
-                                        const link = document.createElement('a');
-                                        link.href = `/api/attachments/${att.relPath}`;
-                                        link.download = att.originalName;
-                                        link.click();
-                                      }}
-                                      title="다운로드"
-                                    >
-                                      <Download className="h-4 w-4" />
-                                    </Button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                      <div className="border border-t-0 border-primary rounded-b-lg bg-muted/20 p-4">
+                        <div className="relative min-h-[400px]">
+                          <ScrollArea className="h-96 border rounded-lg p-4 bg-background">
+                            <p className="text-sm whitespace-pre-wrap">{email.body || "본문 없음"}</p>
+                          </ScrollArea>
+                          <div className="absolute bottom-0 right-0 p-4">
+                            <Button
+                              size="lg"
+                              onClick={() => {
+                                // 첨부파일이 있으면 PDF 찾아서 미리보기
+                                const pdfAttachment = email.attachments?.find(att => 
+                                  att.originalName?.toLowerCase().endsWith('.pdf')
+                                );
+                                if (pdfAttachment) {
+                                  setPreviewFile({ 
+                                    name: pdfAttachment.originalName, 
+                                    path: pdfAttachment.relPath 
+                                  });
+                                } else {
+                                  // 첨부파일 없으면 알림
+                                  alert('이 이메일에는 PDF 첨부파일이 없습니다.');
+                                }
+                              }}
+                            >
+                              <FileText className="h-4 w-4 mr-2" />
+                              첨부파일 {email.attachments && email.attachments.length > 0 && `(${email.attachments.length})`}
+                            </Button>
                           </div>
-                        )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -274,15 +246,15 @@ export default function EmailsPage() {
       </main>
 
       <Dialog open={!!previewFile} onOpenChange={(open) => !open && setPreviewFile(null)}>
-        <DialogContent className="max-w-4xl h-[90vh]">
-          <DialogHeader>
-            <DialogTitle>{previewFile?.name}</DialogTitle>
+        <DialogContent className="max-w-6xl h-[95vh] p-0 gap-0">
+          <DialogHeader className="px-6 py-4 border-b">
+            <DialogTitle className="text-lg font-semibold">{previewFile?.name}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 h-full">
+          <div className="flex-1 overflow-hidden">
             {previewFile && (
               <iframe
                 src={`/api/attachments/${previewFile.path}`}
-                className="w-full h-full border-0 rounded"
+                className="w-full h-[calc(95vh-60px)] border-0"
                 title={previewFile.name}
               />
             )}

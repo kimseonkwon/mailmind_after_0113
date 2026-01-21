@@ -145,9 +145,13 @@ async function convertParsedMailToEmail(parsed: ParsedMail, sourceFileName: stri
   const date = formatEmailDate(parsed.date);
   const body = parsed.text || parsed.html || "";
   
+  console.log(`\n📧 EML 파싱: ${subject}`);
+  console.log(`   첨부파일 개수: ${parsed.attachments?.length || 0}`);
+  
   const attachments: ParsedEmailFromEML['attachments'] = [];
   
   if (parsed.attachments && parsed.attachments.length > 0) {
+    console.log(`   📎 ${parsed.attachments.length}개 첨부파일 발견`);
     const attachmentDir = path.join(os.tmpdir(), `eml_attachments_${Date.now()}`);
     fs.mkdirSync(attachmentDir, { recursive: true });
     
@@ -157,13 +161,15 @@ async function convertParsedMailToEmail(parsed: ParsedMail, sourceFileName: stri
         const storedName = `${Date.now()}_${originalName}`;
         const relPath = path.join(attachmentDir, storedName);
         
+        console.log(`      - ${originalName} (${att.size} bytes, ${att.contentType})`);
+        
         fs.writeFileSync(relPath, att.content);
         
         let pdfText: string | undefined;
         if (att.contentType.includes('pdf') || originalName.toLowerCase().endsWith('.pdf')) {
           pdfText = await extractPdfTextFromBuffer(att.content) || undefined;
           if (pdfText) {
-            console.log(`PDF 텍스트 추출 성공: ${originalName} (${pdfText.length}자)`);
+            console.log(`        PDF 텍스트 추출 성공: ${pdfText.length}자`);
           }
         }
         
@@ -175,11 +181,14 @@ async function convertParsedMailToEmail(parsed: ParsedMail, sourceFileName: stri
           mime: att.contentType,
           pdfText,
         });
+        console.log(`        ✓ 파싱 완료, relPath: ${relPath}`);
       } catch (err) {
         console.error(`첨부파일 처리 오류 (${att.filename}):`, err);
       }
     }
   }
+  
+  console.log(`   ✅ 최종 첨부파일 배열 크기: ${attachments.length}`);
   
   return {
     subject,

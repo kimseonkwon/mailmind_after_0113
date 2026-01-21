@@ -281,6 +281,56 @@ export async function registerRoutes(
       const insertedCount = insertedEmails.length;
       console.log(`✅ ${insertedCount}개 이메일 저장 완료`);
       
+      // 첨부파일 저장
+      let attachmentsSavedCount = 0;
+      const attachmentsDir = path.join(storage.getDataDir(), 'attachments');
+      if (!fs.existsSync(attachmentsDir)) {
+        fs.mkdirSync(attachmentsDir, { recursive: true });
+      }
+      
+      for (let i = 0; i < emailsToImport.length; i++) {
+        const emailData = emailsToImport[i];
+        const savedEmail = insertedEmails[i];
+        
+        if (emailData.attachments && emailData.attachments.length > 0) {
+          console.log(`📎 이메일 ${savedEmail.id}: ${emailData.attachments.length}개 첨부파일 처리 중...`);
+          
+          for (const att of emailData.attachments) {
+            try {
+              // 임시 파일을 영구 저장소로 복사
+              const destPath = path.join(attachmentsDir, att.storedName);
+              
+              // 원본 파일이 존재하는지 확인
+              if (fs.existsSync(att.relPath)) {
+                fs.copyFileSync(att.relPath, destPath);
+                
+                // DB에 상대 경로만 저장
+                await storage.addEmailAttachment({
+                  emailId: savedEmail.id,
+                  filename: att.storedName,
+                  relPath: att.storedName, // 파일명만 저장
+                  size: att.size || 0,
+                  mime: att.mime || 'application/octet-stream',
+                  originalName: att.originalName,
+                });
+                attachmentsSavedCount++;
+                console.log(`  ✓ ${att.originalName} 저장됨`);
+              } else {
+                console.error(`  ✗ 파일을 찾을 수 없음: ${att.relPath}`);
+              }
+            } catch (err) {
+              console.error(`첨부파일 저장 오류 (${att.originalName}):`, err);
+            }
+          }
+        }
+      }
+      
+      if (attachmentsSavedCount > 0) {
+        console.log(`✅ 총 ${attachmentsSavedCount}개 첨부파일 저장 완료`);
+      } else {
+        console.log(`⚠️ 저장된 첨부파일이 없습니다.`);
+      }
+      
       await storage.logImport({
         filename,
         emailsImported: insertedCount,

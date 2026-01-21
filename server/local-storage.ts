@@ -585,6 +585,22 @@ export class LocalSQLiteStorage implements IStorage {
     return attachments.length;
   }
 
+  async addEmailAttachment(attachment: InsertEmailAttachment): Promise<void> {
+    const insert = this.db.prepare(`
+      INSERT INTO email_attachments (email_id, filename, rel_path, size, mime, original_name)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    
+    insert.run(
+      attachment.emailId, 
+      attachment.filename, 
+      attachment.relPath, 
+      attachment.size, 
+      attachment.mime || null, 
+      attachment.originalName || null
+    );
+  }
+
   async getEmailAttachments(emailId: number): Promise<EmailAttachment[]> {
     const rows = this.db.prepare('SELECT * FROM email_attachments WHERE email_id = ? ORDER BY id').all(emailId) as Array<{ id: number; email_id: number; filename: string; rel_path: string; size: number; mime: string | null; original_name: string | null; created_at: string }>;
     return rows.map(row => ({
